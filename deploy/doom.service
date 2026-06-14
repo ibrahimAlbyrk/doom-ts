@@ -19,6 +19,10 @@ WorkingDirectory=/opt/doom
 ExecStart=/usr/bin/npm run start:prod
 Environment=NODE_ENV=production
 Environment=PORT=2567
+# This host shares its Caddy (containerized, fronting another service) so the prod process binds all
+# interfaces and Caddy reaches it via the Docker bridge gateway (172.18.0.1:2567). ufw restricts
+# :2567 to the Docker subnet, so it is never exposed publicly. For a dedicated box with a host-level
+# Caddy, HOST=127.0.0.1 is tighter.
 Environment=HOST=0.0.0.0
 Restart=always
 RestartSec=2
