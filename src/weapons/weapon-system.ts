@@ -199,15 +199,23 @@ export class WeaponSystem {
     const p = this.player;
     const def = WEAPONS[p.currentWeapon];
     const firing = this.fireAnimTics > 0;
-    const flashing = this.flashTics > 0 && def.flashSprite !== '';
+    const hasFlash = def.flashSprite !== '';
+    const flashing = this.flashTics > 0 && hasFlash;
     // DOOM A_WeaponReady: gun rides the player's bob amplitude on the shared walk phase
     // (p.bob, advanced from the level clock by the session). 0 amplitude at rest → no bob.
     const bob = weaponBob(p.bob, bobAmount(p.velX, p.velY));
+    const frame = firing ? fireFrame(def.fireTics, this.fireAnimTics) : 'A';
+    // Bright fire effect via the one full-bright overlay path (drawViewFlash):
+    //  • flash-bearing weapons (pistol/chaingun/rocket/plasma/BFG) overlay their muzzle
+    //    flash sprite (PISF/CHGF/MISF/PLSF/BFGF) and bump whole-view extralight;
+    //  • flash-less weapons (shotgun/SSG/fist/chainsaw) have no flash lump, so they
+    //    re-draw their OWN fire frame full-bright — the discharge frames read clearly lit.
+    const brightFireFrame = firing && !hasFlash;
     return {
       sprite: def.viewSprite,
-      frame: firing ? fireFrame(def.fireTics, this.fireAnimTics) : 'A',
-      flashSprite: flashing ? def.flashSprite : '',
-      flashFrame: flashing ? 'A' : '',
+      frame,
+      flashSprite: flashing ? def.flashSprite : brightFireFrame ? def.viewSprite : '',
+      flashFrame: flashing ? 'A' : brightFireFrame ? frame : '',
       bobX: bob.x,
       bobY: this.lift * LOWER_TRAVEL + bob.y,
       extralight: flashing ? FIRE_EXTRALIGHT : 0,

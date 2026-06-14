@@ -9,9 +9,11 @@ export interface WeaponView {
   sprite: string;
   /** Gun animation frame letter ('A' ready; 'B'+ while firing). */
   frame: string;
-  /** Muzzle-flash lump prefix ('' when not flashing). */
+  /** Full-bright fire-overlay lump prefix ('' when not firing): the muzzle-flash sprite
+   *  for flash-bearing weapons, else the weapon's own prefix so its fire frame redraws bright. */
   flashSprite: string;
-  /** Muzzle-flash frame letter ('' when not flashing). */
+  /** Fire-overlay frame letter ('' when not firing): 'A' for a muzzle flash, else the
+   *  current gun fire frame for flash-less weapons. */
   flashFrame: string;
   /** Horizontal walk-bob offset (px at internal resolution). */
   bobX: number;
