@@ -261,6 +261,47 @@ function testLiftFullApproachTrigger(): void {
   ok(singleCell.lifts[0]!.phase === 'top', 'single-cell trigger leaves the far half a dead corner (control)');
 }
 
+// ── 3d. tier-boundary movement: drop off a ledge and keep walking ─────────────
+// BUG: dropping off the +64 blue-key ledge into the narrow lift channel wedged
+// the player on the flat floor below. Its radius still overlapped the high cell
+// it just left (a >24 step), which blocked like a wall — and the flanking walls
+// left no escape direction, so the player could only wiggle. A body must stand on
+// the HIGHEST floor it touches, so it walks off the seam freely; it still must not
+// auto-climb the +64 step from below.
+function testTierBoundaryMovement(): void {
+  console.log('tier-boundary movement (drop off a ledge, no wedge)');
+  // 3-wide channel (solid columns at x=0 and x=2), 5 tall. Cell (1,0) is a +64
+  // ledge; (1,1..4) are the flat low floor — mirrors the E1M1 lift channel.
+  const w = 3;
+  const h = 5;
+  const walls = new Array(w * h).fill(0) as number[];
+  for (let y = 0; y < h; y++) {
+    walls[y * w + 0] = 1;
+    walls[y * w + 2] = 1;
+  }
+  const data = makeMap(w, h, walls);
+  data.floorHeights[0 * w + 1] = 64; // +64 ledge at the north end of the channel
+  const level = new LevelRuntime(data);
+
+  // Drop + walk: start on the ledge, push south. It must clear the seam and keep
+  // going down the flat channel — not stall one cell past the drop (the wedge bug).
+  const dropper = body(1.5 * CELL_SIZE, 0.5 * CELL_SIZE, 16);
+  for (let i = 0; i < 80; i++) {
+    applyThrust(dropper, Math.PI / 2, 0.78125, 1); // push south, down the channel
+    stepMovement(dropper, level, 1);
+  }
+  ok(cellOf(dropper.y) >= 3, `walks off the +64 ledge across the flat floor, no wedge (y-cell=${cellOf(dropper.y)})`);
+  ok(positionFits(dropper.x, dropper.y, dropper.radius, level), 'rests in a wall-valid spot');
+
+  // Regression: the same +64 step is still unclimbable from below (no free ride up).
+  const climber = body(1.5 * CELL_SIZE, 4.5 * CELL_SIZE, 16);
+  for (let i = 0; i < 80; i++) {
+    applyThrust(climber, -Math.PI / 2, 0.78125, 1); // push north toward the ledge
+    stepMovement(climber, level, 1);
+  }
+  ok(cellOf(climber.y) >= 1, `cannot auto-climb the +64 step from below (y-cell=${cellOf(climber.y)})`);
+}
+
 // ── 4. teleporter relocation + facing ────────────────────────────────────────
 function testTeleporter(): void {
   console.log('teleporter');
@@ -326,6 +367,7 @@ testDoors();
 testLifts();
 testLiftRideAndCarry();
 testLiftFullApproachTrigger();
+testTierBoundaryMovement();
 testTeleporter();
 testPhysics();
 console.log(`\nAll ${passed} world assertions passed.`);
