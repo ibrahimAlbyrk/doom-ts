@@ -36,6 +36,7 @@ import { GameSoundEvents, type AudioManager } from '../audio';
 import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
 import { ITEMS_BY_ID } from '../data';
 import { buildRenderScene } from './scene';
+import { saveResolution } from './resolution-store';
 
 /** A doom-tics-per-fixed-step factor: 60 Hz render step → 35 Hz sim. */
 const TICS_PER_STEP = FIXED_STEP / SECONDS_PER_TIC;
@@ -101,7 +102,10 @@ export class GameSession {
       getBindings: () => ctx.input.getBindings(),
       setBinding: (action, code) => ctx.input.setBinding(action, code),
       audio: ctx.audio,
-      onResolutionChange: () => ctx.renderer.resize(ctx.config),
+      onResolutionChange: () => {
+        ctx.renderer.resize(ctx.config);
+        saveResolution({ width: ctx.config.internalWidth, height: ctx.config.internalHeight });
+      },
     });
 
     // Persistent counters + the fire→noise hookup. These live for the whole app;

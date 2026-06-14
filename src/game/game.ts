@@ -7,8 +7,6 @@ import {
   DEFAULT_BINDINGS,
   FIXED_STEP,
   MAX_FRAME_TIME,
-  INTERNAL_WIDTH_DEFAULT,
-  INTERNAL_HEIGHT_DEFAULT,
   FOV_PLANE_RATIO,
   COLORMAP_LEVELS,
 } from '../core';
@@ -16,6 +14,7 @@ import { DEFAULT_SKILL } from '../data';
 import { createServices } from './context';
 import { createStates } from './states';
 import { GameSession } from './session';
+import { loadResolution } from './resolution-store';
 
 export class Game {
   private readonly ctx2d: CanvasRenderingContext2D;
@@ -35,9 +34,10 @@ export class Game {
     this.ctx2d = ctx2d;
 
     const services = createServices(canvas, { ...DEFAULT_BINDINGS });
+    const res = loadResolution();
     const config: RenderConfig = {
-      internalWidth: INTERNAL_WIDTH_DEFAULT,
-      internalHeight: INTERNAL_HEIGHT_DEFAULT,
+      internalWidth: res.width,
+      internalHeight: res.height,
       fovRatio: FOV_PLANE_RATIO,
       colormapLevels: COLORMAP_LEVELS,
     };
