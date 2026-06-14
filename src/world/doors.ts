@@ -182,41 +182,61 @@ export function teleportEntity(entity: Entity, tp: TeleporterSpec): void {
 /**
  * Resolve walkover triggers under `entity` this frame: teleporters (relocate +
  * face), walkover-triggered lifts (start the cycle), and walkover exits (flag
- * pendingExit). Once-triggers fire a single time. Teleporting moves the entity
- * off its trigger cell, so repeatable teleports don't re-fire while standing.
+ * pendingExit). Once-triggers fire a single time.
+ *
+ * Matching is by the body's footprint (its radius bounding box crosses the
+ * trigger cell, DOOM's bbox line-crossing), so boarding a lift is forgiving and
+ * doesn't demand the body centre land on one exact cell. Firing is edge-detected
+ * (entry only): a body parked on a repeatable trigger fires once per crossing,
+ * never every tic — otherwise a lift retriggers each frame it returns to `top`
+ * and cycles forever instead of completing its travel.
  */
 export function checkWalkoverTriggers(level: LevelRuntime, entity: Entity, events?: SfxSink): void {
-  const cx = cellOf(entity.x);
-  const cy = cellOf(entity.y);
   const data = level.data;
+  const r = entity.radius;
+  const minCx = cellOf(entity.x - r);
+  const maxCx = cellOf(entity.x + r);
+  const minCy = cellOf(entity.y - r);
+  const maxCy = cellOf(entity.y + r);
+  const crosses = (tx: number, ty: number): boolean =>
+    tx >= minCx && tx <= maxCx && ty >= minCy && ty <= maxCy;
+
+  // Collect every walkover trigger the footprint overlaps, then act only on the
+  // ones just entered this tic (level.walkoverEntries edge-detects per entity).
+  const keys: string[] = [];
+  data.lifts.forEach((spec, i) => {
+    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`lift:${i}`);
+  });
+  data.exits.forEach((spec, i) => {
+    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`exit:${i}`);
+  });
+  data.teleporters.forEach((spec, i) => {
+    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`tp:${i}`);
+  });
+  const entered = level.walkoverEntries(entity.id, keys);
+  if (entered.size === 0) return;
 
   data.lifts.forEach((spec, i) => {
-    const t = spec.trigger;
-    if (t.kind !== 'walkover' || t.x !== cx || t.y !== cy) return;
-    if (t.once && level.hasFired('lift', i)) return;
+    if (!entered.has(`lift:${i}`) || (spec.trigger.once && level.hasFired('lift', i))) return;
     const rt = level.lifts[i];
     if (rt && triggerLift(rt)) {
-      sfxAtCell(events, SFX_LIFT_START, cx, cy);
-      if (t.once) level.markFired('lift', i);
+      sfxAtCell(events, SFX_LIFT_START, spec.trigger.x, spec.trigger.y);
+      if (spec.trigger.once) level.markFired('lift', i);
     }
   });
 
   data.exits.forEach((spec, i) => {
-    const t = spec.trigger;
-    if (t.kind !== 'walkover' || t.x !== cx || t.y !== cy) return;
-    if (t.once && level.hasFired('exit', i)) return;
+    if (!entered.has(`exit:${i}`) || (spec.trigger.once && level.hasFired('exit', i))) return;
     level.pendingExit = spec.kind;
-    sfxAtCell(events, SFX_SWITCH, cx, cy);
-    if (t.once) level.markFired('exit', i);
+    sfxAtCell(events, SFX_SWITCH, spec.trigger.x, spec.trigger.y);
+    if (spec.trigger.once) level.markFired('exit', i);
   });
 
   data.teleporters.forEach((spec, i) => {
-    const t = spec.trigger;
-    if (t.kind !== 'walkover' || t.x !== cx || t.y !== cy) return;
-    if (t.once && level.hasFired('tp', i)) return;
+    if (!entered.has(`tp:${i}`) || (spec.trigger.once && level.hasFired('tp', i))) return;
     teleportEntity(entity, spec);
     sfxAtCell(events, SFX_TELEPORT, cellOf(entity.x), cellOf(entity.y));
-    if (t.once) level.markFired('tp', i);
+    if (spec.trigger.once) level.markFired('tp', i);
   });
 }
 

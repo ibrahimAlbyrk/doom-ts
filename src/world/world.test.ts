@@ -4,9 +4,9 @@
 // slide, door block/open/close, lift tier animation + step-up, teleporter
 // relocation, and the friction/clamp/snap movement model. `tsc` typechecks it.
 import type { MapData, Player, Entity } from '../core';
-import { CELL_SIZE, FRICTION, MAX_MOVE, STOP_SPEED } from '../core';
+import { CELL_SIZE, FRICTION, MAX_MOVE, STOP_SPEED, SECONDS_PER_TIC } from '../core';
 import { LevelRuntime } from './level-runtime';
-import { moveEntity, positionFits } from './collision';
+import { moveEntity, positionFits, cellOf } from './collision';
 import { applyThrust, stepMovement, type MovingBody } from './physics';
 import { updateDoors, tryUseDoor, checkWalkoverTriggers } from './doors';
 
@@ -162,6 +162,73 @@ function testLifts(): void {
   ok(near(level.floorHeightAt(1, 1), 48), 'lift returned to the high tier');
 }
 
+// ── 3b. lift: board at low tier, full travel, carry the rider up, no loop ──────
+// Mirrors the real-level pattern (E1M1 etc.): a platform that rests raised flush
+// with a +64 ledge, with a walkover trigger one cell in front of it. Drives the
+// world in the game's canonical per-tic order (move → updateDoors → walkover).
+function testLiftRideAndCarry(): void {
+  console.log('lift ride + carry + no re-trigger loop');
+  const TIC = SECONDS_PER_TIC; // one sim tic of dt for updateDoors
+
+  const data = makeMap(5, 5); // open floor
+  data.floorHeights[1 * 5 + 2] = 64; // cell (2,1): the +64 destination ledge north of the lift
+  data.lifts = [
+    {
+      cells: [{ x: 2, y: 2 }],
+      lowHeight: 0,
+      highHeight: 64,
+      speed: 4,
+      waitTics: 35,
+      trigger: { kind: 'walkover', x: 2, y: 3, once: false }, // in front of the platform
+    },
+  ];
+  const level = new LevelRuntime(data);
+  const lift = level.lifts[0]!;
+
+  // Rests raised: the platform is a wall from the low floor (a +64 step-up).
+  ok(near(level.floorHeightAt(2, 2), 64), 'lift rests at the high tier (64)');
+  ok(!positionFits(2.5 * CELL_SIZE, 2.5 * CELL_SIZE, 16, level, 0), 'raised lift blocks step-up from the low floor');
+
+  // Boarding: walk the rider off the trigger cell onto the platform. The walkover
+  // lowers it; once it is within step-up of the low floor the rider walks on.
+  const rider = body(2.5 * CELL_SIZE, 3.5 * CELL_SIZE, 16);
+  let boarded = false;
+  for (let i = 0; i < 400 && !boarded; i++) {
+    applyThrust(rider, -Math.PI / 2, 0.78125, 1); // push north toward the platform
+    stepMovement(rider, level, 1);
+    updateDoors(level, TIC);
+    checkWalkoverTriggers(level, rider);
+    if (cellOf(rider.x) === 2 && cellOf(rider.y) === 2 && near(level.floorHeightAt(2, 2), 0, 1)) boarded = true;
+  }
+  ok(boarded, 'rider boards the lift cell at the low boarding tier');
+
+  // Carry + full travel: the rider stops; the lift raises and the floor under the
+  // rider tracks the live lift height all the way to the high tier.
+  rider.velX = 0;
+  rider.velY = 0;
+  let carriedTo = level.floorHeightAt(cellOf(rider.x), cellOf(rider.y));
+  for (let i = 0; i < 200 && lift.phase !== 'top'; i++) {
+    updateDoors(level, TIC);
+    if (cellOf(rider.x) === 2 && cellOf(rider.y) === 2) carriedTo = level.floorHeightAt(2, 2);
+  }
+  ok(lift.phase === 'top' && near(lift.height, 64), 'lift completes its full travel back to the high tier');
+  ok(cellOf(rider.x) === 2 && cellOf(rider.y) === 2, 'rider stays on the platform (carried, not left behind)');
+  ok(near(carriedTo, 64), `rider is carried to the target height (floor=${carriedTo.toFixed(1)})`);
+
+  // No re-trigger loop: a body parked on the trigger cell fires the lift once
+  // (edge), then it completes a single cycle and rests — it must not cycle forever.
+  const level2 = new LevelRuntime(data);
+  const lift2 = level2.lifts[0]!;
+  const camper = body(2.5 * CELL_SIZE, 3.5 * CELL_SIZE, 16); // sits on the trigger, never moves
+  checkWalkoverTriggers(level2, camper);
+  ok(lift2.phase === 'lowering', 'parking on the trigger fires the lift exactly once (edge-triggered)');
+  for (let i = 0; i < 400; i++) {
+    updateDoors(level2, TIC);
+    checkWalkoverTriggers(level2, camper);
+  }
+  ok(lift2.phase === 'top' && near(lift2.height, 64), 'lift rests at the top after one cycle (no re-trigger loop)');
+}
+
 // ── 4. teleporter relocation + facing ────────────────────────────────────────
 function testTeleporter(): void {
   console.log('teleporter');
@@ -225,6 +292,7 @@ function testPhysics(): void {
 testWallBlockAndSlide();
 testDoors();
 testLifts();
+testLiftRideAndCarry();
 testTeleporter();
 testPhysics();
 console.log(`\nAll ${passed} world assertions passed.`);
