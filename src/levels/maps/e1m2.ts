@@ -1,96 +1,149 @@
-// E1M2 "Reactor Sublevel" — nukage/tech. The player starts sealed in an east
-// control room and must press out through a door into the reactor hall (a ring
-// around a solid COMPUTE2 core, nukage channels underfoot). The yellow key sits on
-// an isolated chamber reachable only by a teleporter; a second teleporter returns
-// you. A lift climbs to a secret balcony with a soulsphere. The yellow-locked door
-// in the west wall opens the exit room (wall switch).
+// E1M2 "Refinery" — nukage/tech (38×30, SKY1). The player drops from a north
+// control room into the REACTOR HALL and circles a solid COMPUTE core ringed by
+// nukage channels. A teleporter on the hall's SE corner jumps to an isolated island
+// holding the YELLOW key (a second pad returns you). The west PUMP WING opens off
+// the ring; behind its YELLOW-locked door waits the BLUE key. The BLUE-locked door
+// east opens the exit room (switch). Secret: a hidden lift in the pump wing rises to
+// a balcony with a soulsphere + berserk (the melee answer to the demon rush).
 //
-// Layout (24×18): secret balcony(+64) ─ reactor hall(ring) ─ key chamber(teleport)
-//                 yellow door → exit(switch)          control room(start, door)
+// Flow: control(start) ─door─ reactor ring ──(teleport)── YELLOW island
+//       ring ─open─ pump wing ─YELLOW door─ BLUE key ; ring ─BLUE door─ exit(switch).
 import { compile, cells } from '../build';
 
 export const E1M2 = compile({
   id: 'E1M2',
-  name: 'Reactor Sublevel',
-  par: 90,
+  name: 'Refinery',
+  par: 150,
   sky: 'SKY1',
   music: 'D_E1M2',
-  base: { floor: 'FLOOR5_2', ceil: 'CEIL5_1', floorH: 0, ceilH: 144, light: 168 },
+  base: { floor: 'FLOOR5_2', ceil: 'CEIL3_2', floorH: 0, ceilH: 144, light: 168 },
   legend: {
-    '#': { wall: 'ICKWALL3' },
-    M: { wall: 'METAL2' }, // control-room divider wall
-    R: { wall: 'COMPUTE2' }, // reactor core
-    S: { wall: 'SW1EXIT' },
-    '~': { floor: 'NUKAGE1', light: 96 }, // nukage (cosmetic hazard floor)
+    '#': { wall: 'TEKWALL1' },
+    R: { wall: 'COMPUTE1' }, // reactor core
+    S: { wall: 'SW1EXIT' }, // exit switch
+    L: { floor: 'FLOOR5_2' }, // secret lift platform
     '.': {},
   },
   rows: [
-    '########################',
-    '#....#############.....#',
-    '#....#############.....#',
-    '#....#############.....#',
-    '#................#.....#',
-    '#................M######',
-    '#................M.....#',
-    '#......~RRRR~....M.....#',
-    '#......~RRRR~..........#',
-    '#......~RRRR~....M.....#',
-    '#......~RRRR~....M.....#',
-    '#................M.....#',
-    '##.##............#######',
-    '#....#..~~~~~~...#######',
-    '#....#..~~~~~~...#######',
-    '#...S#...........#######',
-    '#....#...........#######',
-    '########################',
+    '######################################',
+    '######################################',
+    '######..........................######',
+    '######..........................######',
+    '######..........................######',
+    '######..........................######',
+    '######..........................######',
+    '##################.###################',
+    '#########....................#.......#',
+    '#.......#....................#.......#',
+    '#.......#....................#.......#',
+    '#.......#...........................S#',
+    '#.......#....................#.......#',
+    '#.......#......RRRRRRRR......#.......#',
+    '###.#####......RRRRRRRR......#.......#',
+    '#.......#......RRRRRRRR......#########',
+    '#.......#......RRRRRRRR......#########',
+    '#.......#......RRRRRRRR......#########',
+    '#..............RRRRRRRR......#########',
+    '#.......#....................#########',
+    '#.......#....................#########',
+    '#.......#....................#########',
+    '#.......#....................#########',
+    '#.......#....................##......#',
+    '###L###########################......#',
+    '#......########################......#',
+    '#......########################......#',
+    '#......########################......#',
+    '#......########################......#',
+    '######################################',
   ],
   paint: [
-    { x0: 1, y0: 1, x1: 4, y1: 3, floor: 'FLAT5_5', ceil: 'FLAT1', floorH: 64, ceilH: 128, light: 96 }, // secret balcony (+64)
-    { x0: 18, y0: 1, x1: 22, y1: 4, floor: 'FLAT5_1', ceil: 'TLITE6_4', ceilH: 120, light: 160 }, // key chamber
-    { x0: 18, y0: 6, x1: 22, y1: 11, floor: 'FLOOR0_1', ceil: 'CEIL3_5', light: 200 }, // control room (start)
-    { x0: 1, y0: 13, x1: 4, y1: 16, floor: 'FLAT1_1', ceil: 'TLITE6_1', ceilH: 112, light: 144 }, // exit room
-    { x0: 5, y0: 7, x1: 15, y1: 11, light: 112 }, // reactor gloom
+    { x0: 6, y0: 2, x1: 31, y1: 6, floor: 'FLOOR5_2', ceil: 'CEIL3_2', ceilH: 128, light: 188 }, // control room
+    { x0: 10, y0: 9, x1: 13, y1: 12, floor: 'NUKAGE1', light: 124 }, // NW nukage pool
+    { x0: 24, y0: 19, x1: 27, y1: 22, floor: 'NUKAGE1', light: 124 }, // SE nukage pool
+    { x0: 13, y0: 13, x1: 14, y1: 18, floor: 'NUKAGE1', light: 132 }, // west reactor channel
+    { x0: 23, y0: 13, x1: 24, y1: 18, floor: 'NUKAGE1', light: 132 }, // east reactor channel
+    { x0: 1, y0: 9, x1: 7, y1: 13, floor: 'FLAT14', ceil: 'TLITE6_1', ceilH: 120, light: 176 }, // blue-key room
+    { x0: 1, y0: 15, x1: 7, y1: 23, floor: 'FLOOR5_2', light: 150 }, // pump wing entry
+    { x0: 1, y0: 25, x1: 6, y1: 28, floor: 'FLOOR5_2', floorH: 64, ceil: 'FLAT1', ceilH: 96, light: 120 }, // secret balcony (+64)
+    { x0: 31, y0: 23, x1: 36, y1: 28, floor: 'FLAT14', ceil: 'TLITE6_4', ceilH: 120, light: 200 }, // yellow island
+    { x0: 30, y0: 8, x1: 36, y1: 14, floor: 'FLAT1_1', ceil: 'TLITE6_1', ceilH: 120, light: 172 }, // exit room
   ],
   doors: [
-    { x: 17, y: 8, texture: 'BIGDOOR4' }, // control room → reactor hall
-    { x: 2, y: 12, texture: 'DOORYEL', kind: 'locked', key: 'yellow' }, // hall → exit
+    { x: 18, y: 7, texture: 'BIGDOOR4' }, // control → reactor hall
+    { x: 3, y: 14, texture: 'DOORYEL', kind: 'locked', key: 'yellow' }, // pump → blue-key room
+    { x: 29, y: 11, texture: 'DOORBLU', kind: 'locked', key: 'blue' }, // hall → exit
   ],
   lifts: [
-    { cells: [{ x: 2, y: 4 }, { x: 3, y: 4 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 2, y: 5, once: false } },
+    { cells: [{ x: 3, y: 24 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 3, y: 23, once: false } }, // secret balcony
   ],
   teleporters: [
-    { trigger: { kind: 'walkover', x: 15, y: 5, once: false }, destX: 20, destY: 3, destAngle: 180 }, // hall → key chamber
-    { trigger: { kind: 'walkover', x: 19, y: 2, once: false }, destX: 15, destY: 6, destAngle: 270 }, // chamber → hall (return)
+    { trigger: { kind: 'walkover', x: 26, y: 22, once: false }, destX: 33, destY: 25, destAngle: 180 }, // hall → yellow island
+    { trigger: { kind: 'walkover', x: 33, y: 27, once: false }, destX: 26, destY: 20, destAngle: 270 }, // island → hall (return)
   ],
-  exits: [{ kind: 'normal', trigger: { kind: 'switch', x: 4, y: 15 } }],
-  secrets: cells(1, 1, 4, 3),
+  exits: [{ kind: 'normal', trigger: { kind: 'switch', x: 36, y: 11 } }],
+  secrets: cells(1, 25, 6, 28),
   things: [
-    { id: 6, x: 21, y: 2, angle: 0 }, // yellow key (on the teleport island)
-    // Weapons + ammo/health.
-    { id: 2001, x: 19, y: 10 }, // shotgun (pistol-start safety)
-    { id: 2002, x: 6, y: 5 }, // chaingun
-    { id: 2007, x: 21, y: 10 }, // clip
-    { id: 2007, x: 12, y: 9 }, // clip
-    { id: 2048, x: 13, y: 5 }, // box of bullets
-    { id: 2008, x: 7, y: 6 }, // 4 shells
-    { id: 2049, x: 14, y: 14 }, // box of shells
-    { id: 2012, x: 16, y: 13 }, // medikit
-    { id: 2012, x: 3, y: 14 }, // medikit (exit reward)
-    { id: 2011, x: 20, y: 11 }, // stimpack
-    { id: 2018, x: 5, y: 9 }, // green armor
-    { id: 2013, x: 2, y: 2 }, // soulsphere (secret balcony)
-    { id: 2015, x: 1, y: 2 }, // armor bonus (secret)
-    // Monsters — denser than E1M1, more shotgun guys + demons.
-    { id: 3004, x: 6, y: 6, angle: 0 }, // zombieman
-    { id: 3004, x: 8, y: 14, angle: 90 }, // zombieman (nukage)
-    { id: 3001, x: 14, y: 6, angle: 180 }, // imp
-    { id: 3001, x: 6, y: 9, angle: 0 }, // imp
-    { id: 3001, x: 12, y: 11, angle: 90 }, // imp
-    { id: 9, x: 5, y: 7, angle: 0 }, // shotgun guy
-    { id: 3002, x: 15, y: 10, angle: 180 }, // demon
-    { id: 3002, x: 10, y: 13, angle: 90 }, // demon (nukage moat)
-    { id: 9, x: 13, y: 9, angle: 180, skill: 6 }, // shotgun guy — normal+hard
-    { id: 9, x: 19, y: 11, angle: 270, skill: 4 }, // shotgun guy — hard only (control-room ambush)
+    { id: 6, x: 34, y: 25, angle: 0 }, // yellow key (teleport island)
+    { id: 5, x: 4, y: 11, angle: 0 }, // blue key (behind yellow door)
+    // Weapons + economy: chaingun ~1/3 in, shotgun safety, no rockets/cells.
+    { id: 2002, x: 12, y: 9 }, // chaingun
+    { id: 2001, x: 20, y: 4 }, // shotgun (control room)
+    { id: 2048, x: 25, y: 21 }, // box of bullets
+    { id: 2007, x: 11, y: 20 }, // clip
+    { id: 2007, x: 26, y: 9 }, // clip
+    { id: 2007, x: 6, y: 16 }, // clip
+    { id: 2049, x: 10, y: 22 }, // box of shells
+    { id: 2049, x: 27, y: 9 }, // box of shells
+    { id: 2008, x: 25, y: 20 }, // 4 shells
+    { id: 2008, x: 11, y: 10 }, // 4 shells
+    { id: 2011, x: 7, y: 3 }, // stimpack
+    { id: 2011, x: 33, y: 13 }, // stimpack (exit)
+    { id: 2011, x: 2, y: 16 }, // stimpack
+    { id: 2011, x: 19, y: 22 }, // stimpack
+    { id: 2012, x: 35, y: 13 }, // medikit (exit reward)
+    { id: 2012, x: 34, y: 27 }, // medikit (island reward)
+    { id: 2012, x: 5, y: 12 }, // medikit (blue room)
+    { id: 2018, x: 9, y: 21 }, // green armor
+    { id: 2015, x: 5, y: 26 }, // armor bonus (secret)
+    { id: 2013, x: 3, y: 27 }, // soulsphere (secret balcony)
+    { id: 2023, x: 2, y: 26 }, // berserk (secret balcony)
+    // Monsters — denser, ~30 on HMP (21 easy / 36 UV).
+    { id: 3004, x: 10, y: 9, angle: 90 }, // zombieman
+    { id: 3004, x: 26, y: 10, angle: 180 }, // zombieman
+    { id: 3004, x: 11, y: 21, angle: 0 }, // zombieman
+    { id: 3004, x: 26, y: 21, angle: 180 }, // zombieman
+    { id: 3004, x: 20, y: 5, angle: 90 }, // zombieman
+    { id: 3004, x: 7, y: 17, angle: 0 }, // zombieman
+    { id: 3004, x: 34, y: 24, angle: 270 }, // zombieman (island)
+    { id: 9, x: 13, y: 20, angle: 90 }, // shotgun guy
+    { id: 9, x: 24, y: 12, angle: 180 }, // shotgun guy
+    { id: 9, x: 19, y: 8, angle: 180 }, // shotgun guy
+    { id: 9, x: 7, y: 21, angle: 0 }, // shotgun guy
+    { id: 3001, x: 11, y: 9, angle: 90 }, // imp
+    { id: 3001, x: 26, y: 19, angle: 180 }, // imp
+    { id: 3001, x: 10, y: 20, angle: 0 }, // imp
+    { id: 3001, x: 27, y: 20, angle: 180 }, // imp
+    { id: 3001, x: 13, y: 17, angle: 90 }, // imp
+    { id: 3001, x: 24, y: 17, angle: 180 }, // imp
+    { id: 3001, x: 33, y: 26, angle: 270 }, // imp (island)
+    { id: 3002, x: 18, y: 9, angle: 90 }, // demon
+    { id: 3002, x: 11, y: 16, angle: 0 }, // demon
+    { id: 3002, x: 26, y: 16, angle: 180 }, // demon
+    { id: 3004, x: 12, y: 20, angle: 90, skill: 6 }, // zombieman — normal+hard
+    { id: 3004, x: 25, y: 12, angle: 180, skill: 6 }, // zombieman — normal+hard
+    { id: 3004, x: 6, y: 20, angle: 0, skill: 6 }, // zombieman — normal+hard
+    { id: 9, x: 25, y: 19, angle: 180, skill: 6 }, // shotgun guy — normal+hard
+    { id: 9, x: 6, y: 12, angle: 0, skill: 6 }, // shotgun guy — normal+hard
+    { id: 3001, x: 12, y: 10, angle: 90, skill: 6 }, // imp — normal+hard
+    { id: 3001, x: 25, y: 9, angle: 180, skill: 6 }, // imp — normal+hard
+    { id: 3001, x: 11, y: 18, angle: 90, skill: 6 }, // imp — normal+hard
+    { id: 3002, x: 13, y: 21, angle: 90, skill: 6 }, // demon — normal+hard
+    { id: 3004, x: 24, y: 9, angle: 180, skill: 4 }, // zombieman — hard only
+    { id: 3004, x: 11, y: 12, angle: 0, skill: 4 }, // zombieman — hard only
+    { id: 3001, x: 26, y: 12, angle: 180, skill: 4 }, // imp — hard only
+    { id: 3001, x: 13, y: 19, angle: 90, skill: 4 }, // imp — hard only
+    { id: 3001, x: 24, y: 19, angle: 180, skill: 4 }, // imp — hard only
+    { id: 3002, x: 24, y: 21, angle: 180, skill: 4 }, // demon — hard only
   ],
-  start: { x: 20, y: 9, angle: 180 },
+  start: { x: 18, y: 3, angle: 180 },
 });

@@ -100,10 +100,15 @@ for (const map of EPISODE1_MAPS) {
 ok(episodeHard > episodeEasy, `episode harder skill spawns more monsters (${episodeEasy} → ${episodeHard})`);
 
 // ── Episode wiring ──────────────────────────────────────────────────────────────
-ok(EPISODE1.levels.length >= 3 && EPISODE1.levels.length <= 5, 'episode has 3–5 levels');
-for (const lvl of EPISODE1.levels) ok(EPISODE1_MAPS.some((m) => m.id === lvl.id), `${lvl.id} has compiled map data`);
+ok(EPISODE1.levels.length === 6, 'episode has 6 levels (E1M1–E1M6)');
 const order = EPISODE1.levels.map((l) => l.id);
+ok(order.join(',') === 'E1M1,E1M2,E1M3,E1M4,E1M5,E1M6', `episode order is E1M1..E1M6 (got ${order.join(',')})`);
+for (const lvl of EPISODE1.levels) ok(EPISODE1_MAPS.some((m) => m.id === lvl.id), `${lvl.id} has compiled map data`);
 for (let i = 0; i < order.length - 1; i++) ok(nextLevelId(EPISODE1, order[i]!) === order[i + 1], `${order[i]} → ${order[i + 1]}`);
 ok(nextLevelId(EPISODE1, order[order.length - 1]!) === null, 'final level ends the episode (victory)');
+
+// Final level is a boss climax: E1M6 fields a cyberdemon (DoomEd id 16).
+const finale = EPISODE1_MAPS[EPISODE1_MAPS.length - 1]!;
+ok(finale.id === 'E1M6' && finale.things.some((t) => t.id === 16), 'E1M6 climaxes with a cyberdemon boss');
 
 console.log(`\nALL LEVEL CHECKS PASSED (${passed} assertions across ${EPISODE1_MAPS.length} levels)`);
