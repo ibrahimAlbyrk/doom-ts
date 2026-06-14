@@ -1,8 +1,48 @@
-// AudioManager — implements the Audio contract (Web Audio API, web-arch.md §6).
-// The AudioContext is created lazily on the first user gesture (resume/load) so the
-// app boots without an autoplay warning. Positional SFX pan/volume by distance+angle;
-// music is a secondary bus.
+// AudioManager — the Web Audio implementation of the frozen `Audio` contract
+// (src/core/audio.ts, web-arch.md §6). Routing: every voice → sfxBus | musicBus →
+// master → destination. The AudioContext starts suspended and is created lazily on
+// the first load/play/resume so booting never trips a browser autoplay error; the app
+// calls resume() on the first user gesture to start playback.
+//
+// SFX use a DOOM-style voice pool (sfx-pool.ts) to cap simultaneous channels.
+// Positional SFX attenuate by distance and pan by the source's angle relative to the
+// listener's facing (setListener, updated each frame). Music is a secondary, looping
+// bus; with no music in the manifest the API is a graceful no-op.
+//
+// Master / SFX / Music gain and a master mute persist to localStorage so settings
+// survive reloads.
 import type { Audio } from '../core';
+import { VoicePool } from './sfx-pool';
+
+/** Extra knobs for the ergonomic `play()` entry point. */
+export interface PlayOptions {
+  /** 0..1 gain multiplier (before positional attenuation). Default 1. */
+  volume?: number;
+  /** -1..1 explicit stereo pan. Ignored when `x`/`y` make the sound positional. */
+  pan?: number;
+  /** World position; with `y`, the sound is positioned relative to the listener. */
+  x?: number;
+  y?: number;
+  /** Silence cutoff distance for positional sounds (world units). */
+  maxDist?: number;
+  /** Voice-pool priority — higher survives channel contention. Default 50. */
+  priority?: number;
+}
+
+const STORE_KEYS = {
+  master: 'doom.audio.master',
+  sfx: 'doom.audio.sfx',
+  music: 'doom.audio.music',
+  muted: 'doom.audio.muted',
+} as const;
+
+const DEFAULT_PRIORITY = 50;
+// Distance model (world/map units): full volume within CLOSE_DIST, linear falloff to
+// silence at MAX_DIST — roughly DOOM's S_CLOSE_DIST / S_CLIPPING_DIST.
+const SFX_CLOSE_DIST = 160;
+const SFX_MAX_DIST = 1200;
+
+const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
 export class AudioManager implements Audio {
   private ctx: AudioContext | null = null;
@@ -11,65 +51,100 @@ export class AudioManager implements Audio {
   private musicBus: GainNode | null = null;
   private musicSource: AudioBufferSourceNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
+  private readonly pool = new VoicePool();
 
   private masterVol = 0.8;
   private sfxVol = 1.0;
   private musicVol = 0.7;
+  private muted = false;
 
+  // Listener pose for positional playback; integration updates it each frame.
+  private listenerX = 0;
+  private listenerY = 0;
+  private listenerAngle = 0;
+
+  constructor() {
+    this.loadSettings();
+  }
+
+  // ── AudioContext lifecycle ───────────────────────────────────────────────────
   private ensure(): AudioContext {
     if (this.ctx) return this.ctx;
     const ctx = new AudioContext();
     this.master = ctx.createGain();
     this.sfxBus = ctx.createGain();
     this.musicBus = ctx.createGain();
-    this.master.gain.value = this.masterVol;
-    this.sfxBus.gain.value = this.sfxVol;
-    this.musicBus.gain.value = this.musicVol;
     this.sfxBus.connect(this.master);
     this.musicBus.connect(this.master);
     this.master.connect(ctx.destination);
     this.ctx = ctx;
+    this.applyGains();
     return ctx;
   }
 
+  /** Resume the (suspended) AudioContext — call on the first user gesture. */
   async resume(): Promise<void> {
     await this.ensure().resume();
   }
 
+  /** Fetch + decode a buffer under `id` (used by the boot AssetLoader). */
   async load(id: string, url: string): Promise<void> {
     const ctx = this.ensure();
     const raw = await (await fetch(url)).arrayBuffer();
     this.buffers.set(id, await ctx.decodeAudioData(raw));
   }
 
+  // ── SFX (frozen contract) ────────────────────────────────────────────────────
   playSfx(id: string, volume = 1, pan = 0): void {
-    if (!this.ctx || !this.sfxBus) return;
-    const buf = this.buffers.get(id);
-    if (!buf) return;
-    const src = this.ctx.createBufferSource();
-    const gain = this.ctx.createGain();
-    const panner = this.ctx.createStereoPanner();
-    src.buffer = buf;
-    gain.gain.value = volume;
-    panner.pan.value = Math.max(-1, Math.min(1, pan));
-    src.connect(gain).connect(panner).connect(this.sfxBus);
-    src.start();
+    this.spawn(id, volume, pan, DEFAULT_PRIORITY);
   }
 
-  playSfxSpatial(id: string, dx: number, dy: number, maxDist = 800): void {
-    const dist = Math.hypot(dx, dy);
-    if (dist > maxDist) return;
-    const volume = 1 - dist / maxDist;
-    const pan = Math.max(-1, Math.min(1, dx / (maxDist * 0.5)));
-    this.playSfx(id, volume, pan);
+  playSfxSpatial(id: string, dx: number, dy: number, maxDist = SFX_MAX_DIST): void {
+    const placed = this.spatial(dx, dy, maxDist);
+    if (!placed) return;
+    this.spawn(id, placed.volume, placed.pan, DEFAULT_PRIORITY);
   }
 
+  // ── SFX (ergonomic entry point for game + integration) ───────────────────────
+  /** One call for positional or flat SFX. Give `x`/`y` for positional playback
+   *  (relative to the current listener), or `pan`/`volume` for a flat sound. */
+  play(id: string, opts: PlayOptions = {}): void {
+    const baseVol = opts.volume ?? 1;
+    const priority = opts.priority ?? DEFAULT_PRIORITY;
+    if (opts.x !== undefined && opts.y !== undefined) {
+      const placed = this.spatial(opts.x - this.listenerX, opts.y - this.listenerY, opts.maxDist ?? SFX_MAX_DIST);
+      if (!placed) return;
+      this.spawn(id, baseVol * placed.volume, placed.pan, priority);
+      return;
+    }
+    this.spawn(id, baseVol, opts.pan ?? 0, priority);
+  }
+
+  /** Update the listener pose (player position + facing, radians) each frame. */
+  setListener(x: number, y: number, angle: number): void {
+    this.listenerX = x;
+    this.listenerY = y;
+    this.listenerAngle = angle;
+  }
+
+  /** Cut every active SFX voice (e.g. on level teardown). Music is untouched. */
+  stopAllSfx(): void {
+    this.pool.stopAll();
+  }
+
+  /** Number of SFX voices currently playing (for debug HUD / channel-cap checks). */
+  get activeVoices(): number {
+    return this.pool.activeCount;
+  }
+
+  // ── Music (secondary; no-op when the id was never loaded) ────────────────────
   playMusic(id: string, loop = true): void {
-    if (!this.ctx || !this.musicBus) return;
-    this.stopMusic();
+    const ctx = this.ctx;
+    if (!ctx || !this.musicBus) return;
     const buf = this.buffers.get(id);
-    if (!buf) return;
-    const src = this.ctx.createBufferSource();
+    if (!buf) return; // no music in the manifest → graceful no-op
+    this.stopMusic();
+    const src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = loop;
     src.connect(this.musicBus);
@@ -78,22 +153,119 @@ export class AudioManager implements Audio {
   }
 
   stopMusic(): void {
-    this.musicSource?.stop();
+    if (!this.musicSource) return;
+    this.musicSource.onended = null;
+    try {
+      this.musicSource.stop();
+    } catch {
+      // already stopped
+    }
     this.musicSource = null;
   }
 
+  // ── Mixer (gain + mute, persisted) ───────────────────────────────────────────
   setMasterVolume(v: number): void {
-    this.masterVol = v;
-    if (this.master) this.master.gain.value = v;
+    this.masterVol = clamp(v, 0, 1);
+    this.applyGains();
+    this.persist(STORE_KEYS.master, this.masterVol);
   }
 
   setSfxVolume(v: number): void {
-    this.sfxVol = v;
-    if (this.sfxBus) this.sfxBus.gain.value = v;
+    this.sfxVol = clamp(v, 0, 1);
+    this.applyGains();
+    this.persist(STORE_KEYS.sfx, this.sfxVol);
   }
 
   setMusicVolume(v: number): void {
-    this.musicVol = v;
-    if (this.musicBus) this.musicBus.gain.value = v;
+    this.musicVol = clamp(v, 0, 1);
+    this.applyGains();
+    this.persist(STORE_KEYS.music, this.musicVol);
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    this.applyGains();
+    this.persist(STORE_KEYS.muted, muted ? 1 : 0);
+  }
+
+  isMuted(): boolean {
+    return this.muted;
+  }
+
+  getMasterVolume(): number {
+    return this.masterVol;
+  }
+
+  getSfxVolume(): number {
+    return this.sfxVol;
+  }
+
+  getMusicVolume(): number {
+    return this.musicVol;
+  }
+
+  // ── internals ────────────────────────────────────────────────────────────────
+  private spawn(id: string, volume: number, pan: number, priority: number): void {
+    if (volume <= 0) return;
+    const ctx = this.ctx;
+    if (!ctx || !this.sfxBus) return;
+    const buf = this.buffers.get(id);
+    if (!buf) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    if (!this.pool.admit(src, priority)) return; // cut by channel limit
+    const gain = ctx.createGain();
+    gain.gain.value = clamp(volume, 0, 1);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = clamp(pan, -1, 1);
+    src.connect(gain).connect(panner).connect(this.sfxBus);
+    src.start();
+  }
+
+  /** Distance attenuation + stereo pan from a world offset, using listener facing.
+   *  Returns null when the source is past the cutoff (caller skips the sound). */
+  private spatial(dx: number, dy: number, maxDist: number): { volume: number; pan: number } | null {
+    const dist = Math.hypot(dx, dy);
+    if (dist >= maxDist) return null;
+    const volume = dist <= SFX_CLOSE_DIST ? 1 : (maxDist - dist) / (maxDist - SFX_CLOSE_DIST);
+    if (dist < 1e-3) return { volume, pan: 0 };
+    // Lateral component in the listener's frame: +1 = fully to the player's right.
+    const sin = Math.sin(this.listenerAngle);
+    const cos = Math.cos(this.listenerAngle);
+    const right = dx * sin - dy * cos;
+    return { volume, pan: clamp(right / dist, -1, 1) };
+  }
+
+  private applyGains(): void {
+    if (this.master) this.master.gain.value = this.muted ? 0 : this.masterVol;
+    if (this.sfxBus) this.sfxBus.gain.value = this.sfxVol;
+    if (this.musicBus) this.musicBus.gain.value = this.musicVol;
+  }
+
+  private loadSettings(): void {
+    const store = this.store();
+    if (!store) return;
+    const num = (key: string, fallback: number): number => {
+      const raw = store.getItem(key);
+      if (raw === null) return fallback;
+      const n = Number.parseFloat(raw);
+      return Number.isFinite(n) ? clamp(n, 0, 1) : fallback;
+    };
+    this.masterVol = num(STORE_KEYS.master, this.masterVol);
+    this.sfxVol = num(STORE_KEYS.sfx, this.sfxVol);
+    this.musicVol = num(STORE_KEYS.music, this.musicVol);
+    this.muted = store.getItem(STORE_KEYS.muted) === '1';
+  }
+
+  private persist(key: string, value: number): void {
+    this.store()?.setItem(key, String(value));
+  }
+
+  private store(): Storage | null {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage : null;
+    } catch {
+      return null; // access denied (private mode / sandboxed iframe)
+    }
   }
 }
