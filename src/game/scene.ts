@@ -49,7 +49,7 @@ function pickFrame(
   );
 }
 
-function monsterFrameLetter(m: Monster, animTic: number): string {
+function monsterFrameLetter(m: Monster, animTic: number, assets: IAssetStore, prefix: string): string {
   switch (m.state) {
     case 'chase':
       return WALK_FRAMES[Math.floor(animTic / ANIM_TICS_PER_WALK) % 4]!;
@@ -60,9 +60,14 @@ function monsterFrameLetter(m: Monster, animTic: number): string {
       return 'G';
     case 'death':
     case 'gib':
-      return DEATH_FRAMES[Math.min(DEATH_FRAMES.length - 1, Math.floor(m.stateTimer / 5))]!;
-    case 'dead':
-      return DEATH_FRAMES[DEATH_FRAMES.length - 1]!;
+    case 'dead': {
+      // Only walk death frames this monster actually has a sprite for, so a dead
+      // monster never resolves to the standing 'A' frame and "stands up".
+      const avail = DEATH_FRAMES.filter((L) => assets.getSprite(prefix, L, 0) !== undefined);
+      if (avail.length === 0) return DEATH_FRAMES[DEATH_FRAMES.length - 1]!;
+      const idx = m.state === 'dead' ? avail.length - 1 : Math.min(avail.length - 1, Math.floor(m.stateTimer / 5));
+      return avail[idx]!;
+    }
     default:
       return 'A';
   }
@@ -89,7 +94,7 @@ export function buildRenderScene(
 
   for (const m of world.monsters) {
     const def = ENEMIES[m.type];
-    const frame = pickFrame(assets, def.sprite, monsterFrameLetter(m, animTic), rotationFor(p.x, p.y, m));
+    const frame = pickFrame(assets, def.sprite, monsterFrameLetter(m, animTic, assets, def.sprite), rotationFor(p.x, p.y, m));
     if (!frame) continue;
     sprites.push({
       x: m.x / CELL_SIZE,
