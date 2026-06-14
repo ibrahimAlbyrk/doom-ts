@@ -1,0 +1,26 @@
+{
+  // Headless typecheck of the SHARED SIM: the same strict options as the client build
+  // but with NO `DOM` lib and NO ambient @types. If this compiles, the sim (core +
+  // data/world/combat/ai/entities/weapons/items/levels + the headless GameSession)
+  // genuinely has no document/canvas/window — i.e. it runs under Node, which is what
+  // the authoritative multiplayer server needs. See docs/multiplayer-plan.md §0.1.
+  // Run: `npm run typecheck:sim`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": [
+    "src/core",
+    "src/data",
+    "src/world",
+    "src/combat",
+    "src/ai",
+    "src/entities",
+    "src/weapons",
+    "src/items",
+    "src/levels",
+    "src/game/session.ts"
+  ],
+  "exclude": ["**/*.test.ts"]
+}

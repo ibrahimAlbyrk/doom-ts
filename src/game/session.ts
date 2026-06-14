@@ -1,11 +1,15 @@
-// GameSession — the live-game runtime that the PLAYING/PAUSED/INTERMISSION/…
-// states drive. It owns the per-level systems (combat bus, weapons, AI, sounds,
-// LevelRuntime), runs one fixed sim tic in the canonical order, assembles the
-// render scene each frame, and threads the episode/intermission flow.
+// GameSession — the HEADLESS, deterministic simulation core. It owns the per-level
+// systems (combat bus, weapons, AI, LevelRuntime) and runs one fixed sim tic in the
+// canonical order, driven entirely by a serializable TicCommand. It has NO presentation:
+// no canvas, audio, HUD, menus, or DOM — so it compiles and runs identically in the
+// browser (driven by LocalSession) AND under Node (the authoritative multiplayer server).
+// This is the replication seam the online build runs server-side; see
+// docs/multiplayer-plan.md §0.1/§1.1. The browser presentation (render/HUD/audio/input)
+// lives in the GameClient presenter (src/game/client.ts).
 //
 // Per-level systems are rebuilt on every startLevel and torn down first, so combat
-// subscriptions never leak between maps. Shared services live on the GameContext.
-import type { GameContext, SkillId, MapData, Action, ScreenTint, PowerupKind } from '../core';
+// subscriptions never leak between maps. Shared services live on the SimContext.
+import type { SimContext, SkillId, MapData, ILevelRuntime } from '../core';
 import {
   CELL_SIZE,
   FIXED_STEP,
@@ -29,71 +33,56 @@ import {
 import { loadLevel, mapDataFor, nextLevelId, thingSpawnsAtSkill, EPISODE1 } from '../levels';
 import { createPlayer, enemyDefForThingId } from '../entities';
 import { CombatBus, updateProjectiles } from '../combat';
-import { WeaponSystem, bobPhase } from '../weapons';
+import { WeaponSystem, bobPhase, type WeaponView } from '../weapons';
 import { createMonsterAI, type MonsterAI } from '../ai';
 import { updateItems } from '../items';
-import { GameSoundEvents, type AudioManager } from '../audio';
-import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
 import { ITEMS_BY_ID } from '../data';
-import { buildRenderScene } from './scene';
-import { saveResolution } from './resolution-store';
 
 /** A doom-tics-per-fixed-step factor: 60 Hz render step → 35 Hz sim. */
 const TICS_PER_STEP = FIXED_STEP / SECONDS_PER_TIC;
-/** Radians of yaw per mouse pixel before the user sensitivity multiplier. */
-const MOUSE_RADIANS_PER_PX = 0.0022;
 /** Use-press probe distances ahead of the player (map units). */
 const USE_REACHES = [28, 52, 76] as const;
 
 const SFX_SWITCH = 'DSSWTCHN';
 const SFX_LIFT_START = 'DSPSTART';
 
-// View-floor smoothing (DOOM P_CalcHeight feel): the rendered eye eases toward the
-// player's standing floor tier instead of snapping when stepping up/down a tier or
-// riding a lift. Each doom-tic closes this fraction of the remaining gap, with a
-// minimum step so the proportional tail lands quickly (a tier change settles in a
-// fraction of a second rather than floating slowly).
-const VIEW_FLOOR_LERP = 0.3;
-const VIEW_FLOOR_MIN_STEP = 2; // mu per doom-tic
-
+/** One tick's complete input. Serializable + self-contained: a tick is fully described
+ *  by this command (mouse-look folded into `lookTurn`, `seq` for client reconciliation),
+ *  so the same command replays to the same result on client and server. */
 export interface TicCommand {
   forward: number; // -1..1 (forward +)
   strafe: number; // -1..1 (right +)
   turn: number; // -1..1 keyboard turn (right +)
+  /** Mouse-look yaw delta for this tick, in RADIANS (already sensitivity-scaled).
+   *  Folds the per-frame mouse delta into the command so prediction can replay it. */
+  lookTurn: number;
   run: boolean;
   fire: boolean;
   use: boolean;
   weaponSlot: number; // 0 = none, else 1..7
   weaponCycle: number; // -1 prev, +1 next, 0 none
   pause: boolean;
+  /** Monotonic per-player command sequence (client→server reconciliation, P3a). */
+  seq: number;
 }
 
 export type TicResult = 'continue' | 'exit' | 'dead';
 
+/** Options for a session instance. `presentation` true = a client-driven sim (emits
+ *  cosmetic SFX events for local audio); false = the headless server (gameplay events
+ *  only — the client turns those into SFX over the wire). */
+export interface SessionOptions {
+  presentation: boolean;
+}
+
 export class GameSession {
-  readonly cache: TextureCache;
-  readonly hud: HudController;
-  readonly intermission: Intermission;
-  readonly menus: Menus;
-
-  /** The concrete audio manager (ctx.audio is the narrower core Audio interface). */
-  private readonly audio: AudioManager;
-
   private level: LevelRuntime | null = null;
-  private combat: CombatBus | null = null;
+  private combatBus: CombatBus | null = null;
   private weapons: WeaponSystem | null = null;
   private ai: MonsterAI | null = null;
-  private gse: GameSoundEvents | null = null;
 
+  private readonly presentation: boolean;
   private currentMapId = '';
-  private pendingNextId: string | null = null;
-  private automapOn = false;
-  /** Decaying 0..1 tint strengths: red on taking damage, gold on a pickup. */
-  private damageFlash = 0;
-  private bonusFlash = 0;
-  private animTic = 0;
-  /** Smoothed view-floor height (mu) the eye rides; eases toward the standing tier. */
-  private smoothViewFloorZ = 0;
   private levelTimeTics = 0;
   private kills = 0;
   private items = 0;
@@ -101,45 +90,70 @@ export class GameSession {
   private totalKills = 0;
   private totalItems = 0;
   private totalSecrets = 0;
+  /** Last command seq applied (handed back in snapshots for reconciliation, P3a). */
+  private lastProcessedSeq = -1;
 
-  constructor(private readonly ctx: GameContext) {
-    this.audio = ctx.audio as AudioManager;
-    this.cache = new TextureCache(ctx.assets);
-    this.hud = new HudController(this.cache, ctx.events);
-    this.intermission = new Intermission(this.cache);
-    this.menus = new Menus(this.cache, {
-      config: ctx.config,
-      getBindings: () => ctx.input.getBindings(),
-      setBinding: (action, code) => ctx.input.setBinding(action, code),
-      audio: ctx.audio,
-      onResolutionChange: () => {
-        ctx.renderer.resize(ctx.config);
-        saveResolution({ width: ctx.config.internalWidth, height: ctx.config.internalHeight });
-      },
-    });
+  constructor(
+    private readonly ctx: SimContext,
+    opts: SessionOptions = { presentation: true },
+  ) {
+    this.presentation = opts.presentation;
 
-    // Persistent counters + the fire→noise hookup. These live for the whole app;
-    // counters are zeroed per level and `this.ai` is whatever the current level built.
+    // Game-state counters + the gunshot→AI-noise hookup. These live for the whole
+    // session; counters are zeroed per level and `this.ai` is the current level's.
     ctx.events.on('monster:died', () => this.kills++);
-    ctx.events.on('pickup:collected', () => {
-      this.items++;
-      this.bonusFlash = Math.min(0.45, this.bonusFlash + 0.22);
-    });
+    ctx.events.on('pickup:collected', () => this.items++);
     ctx.events.on('secret:found', () => this.secrets++);
-    // Damage red-flash: bump a decaying counter on each hit (doom-design §5 tint).
-    // Capped to the renderer-fx reference strength (~0.5) so it never fully occludes
-    // the view, even stacked over the HUD's own brief damage flash.
-    ctx.events.on('player:damaged', (e) => {
-      this.damageFlash = Math.min(0.55, this.damageFlash + 0.18 + e.amount / 60);
-    });
     ctx.events.on('weapon:fired', () => {
       const p = this.ctx.world.player;
       this.ai?.noise(p.x, p.y);
     });
   }
 
+  // ── read access for the presenter / replication ─────────────────────────────
+
+  get world() {
+    return this.ctx.world;
+  }
+  get currentLevel(): ILevelRuntime | null {
+    return this.level;
+  }
+  /** The current level's per-level combat bus (the presenter binds audio to it). */
+  get combat(): CombatBus | null {
+    return this.combatBus;
+  }
   get levelActive(): boolean {
     return this.level !== null;
+  }
+  get currentLevelData(): MapData | null {
+    return this.level?.data ?? null;
+  }
+  get processedSeq(): number {
+    return this.lastProcessedSeq;
+  }
+  /** The local player's screen-space weapon view-model (the presenter resolves sprites). */
+  getWeaponView(): WeaponView | null {
+    return this.weapons?.getView() ?? null;
+  }
+  /** Per-level progress counters for the intermission tally (presenter builds the UI). */
+  stats(): {
+    kills: number;
+    totalKills: number;
+    items: number;
+    totalItems: number;
+    secrets: number;
+    totalSecrets: number;
+    timeTics: number;
+  } {
+    return {
+      kills: this.kills,
+      totalKills: this.totalKills,
+      items: this.items,
+      totalItems: this.totalItems,
+      secrets: this.secrets,
+      totalSecrets: this.totalSecrets,
+      timeTics: this.levelTimeTics,
+    };
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -160,80 +174,41 @@ export class GameSession {
     if (!data) throw new Error(`startLevel: unknown map ${mapId}`);
 
     this.currentMapId = mapId;
-    this.combat = new CombatBus(this.ctx.events);
+    this.combatBus = new CombatBus(this.ctx.events);
     this.level = loadLevel(this.ctx.world, data, this.ctx.skill, this.ctx.events);
-    this.weapons = new WeaponSystem(this.ctx.world, this.ctx.rng, this.combat);
-    this.ai = createMonsterAI(this.ctx.world, this.ctx.rng, this.combat);
-    this.gse = new GameSoundEvents(this.audio, (id) => this.locate(id));
-    this.gse.bindGame(this.ctx.events);
-    this.gse.bindCombat(this.combat);
+    this.weapons = new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus);
+    this.ai = createMonsterAI(this.ctx.world, this.ctx.rng, this.combatBus);
 
     this.computeTotals(data);
     this.kills = 0;
     this.items = 0;
     this.secrets = 0;
     this.levelTimeTics = 0;
-    this.animTic = 0;
-    // Seed the smoothed view-floor to the spawn tier so the first frame doesn't ease.
-    const sp = this.ctx.world.player;
-    this.smoothViewFloorZ = this.level.floorHeightAt(cellOf(sp.x), cellOf(sp.y));
-    this.damageFlash = 0;
-    this.bonusFlash = 0;
-    this.hud.setMessage(data.name);
-
-    // Per-level music: switch tracks on each load (no-op for unknown ids). The
-    // AudioContext is resumed on the menu's start gesture, so playback starts here.
-    if (data.music) this.audio.playMusic(data.music);
   }
 
   teardownLevel(): void {
     this.ai?.dispose();
     this.weapons?.dispose();
-    this.gse?.unbindAll();
-    this.audio.stopAllSfx();
-    this.audio.stopMusic();
     this.ai = null;
     this.weapons = null;
-    this.gse = null;
-    this.combat = null;
+    this.combatBus = null;
     this.level = null;
   }
 
-  // ── per-frame input (read once, applied to N sim steps) ─────────────────────
-
-  /** Snapshot input into a command and apply discrete mouse-look to the player's
-   *  yaw immediately (mouse delta is a per-frame quantity, not per sim tic). */
-  readCommand(): TicCommand {
-    const input = this.ctx.input;
-    const axis = (pos: Action, neg: Action): number =>
-      (input.isDown(pos) ? 1 : 0) - (input.isDown(neg) ? 1 : 0);
-
-    let weaponSlot = 0;
-    for (let n = 1; n <= 7; n++) {
-      if (input.wasPressed(`weapon${n}` as Action)) weaponSlot = n;
+  /** Compute next level after the just-finished one: load it, or signal victory. */
+  advanceAfterIntermission(): 'next' | 'victory' {
+    const nextId = nextLevelId(EPISODE1, this.currentMapId);
+    if (nextId === null) {
+      this.teardownLevel();
+      return 'victory';
     }
+    this.startLevel(nextId);
+    return 'next';
+  }
 
-    // Automap toggle (edge): read once per frame, here in the per-frame command read.
-    if (input.wasPressed('automap')) this.automapOn = !this.automapOn;
-
-    if (input.pointerLocked && input.mouseDX !== 0) {
-      const sens = this.menus.getSensitivity();
-      this.ctx.world.player.angle += input.mouseDX * MOUSE_RADIANS_PER_PX * sens;
-    }
-
-    return {
-      forward: axis('moveForward', 'moveBack'),
-      strafe: axis('strafeRight', 'strafeLeft'),
-      turn: axis('turnRight', 'turnLeft'),
-      run: input.isDown('run'),
-      // Held OR pressed this tick: a tap too fast to be sampled as held still fires
-      // once (the trigger releases next tick → stopFire), so quick taps never drop.
-      fire: input.isDown('fire') || input.wasPressed('fire'),
-      use: input.wasPressed('use'),
-      weaponSlot,
-      weaponCycle: (input.wasPressed('nextWeapon') ? 1 : 0) - (input.wasPressed('prevWeapon') ? 1 : 0),
-      pause: input.wasPressed('pause'),
-    };
+  /** The level that follows the current one (for the intermission "next" label). */
+  peekNextLevelId(): string | null {
+    return nextLevelId(EPISODE1, this.currentMapId);
   }
 
   // ── one sim tic (canonical order) ───────────────────────────────────────────
@@ -243,15 +218,16 @@ export class GameSession {
     const level = this.level;
     const weapons = this.weapons;
     const ai = this.ai;
-    const combat = this.combat;
+    const combat = this.combatBus;
     if (!level || !weapons || !ai || !combat) return 'continue';
 
+    this.lastProcessedSeq = cmd.seq;
     const p = world.player;
     const T = TICS_PER_STEP;
 
-    // 1) turn (keyboard) + movement thrust with wall-slide collision.
+    // 1) turn (keyboard + folded mouse-look) + movement thrust with wall-slide collision.
     const turnRate = degToRad(cmd.run ? TURN_RUN_DEG_PER_SEC : TURN_WALK_DEG_PER_SEC);
-    p.angle += cmd.turn * turnRate * FIXED_STEP;
+    p.angle += cmd.turn * turnRate * FIXED_STEP + cmd.lookTurn;
 
     const thrust = cmd.run ? PLAYER_THRUST_RUN : PLAYER_THRUST_WALK;
     if (cmd.forward !== 0) applyThrust(p, p.angle, thrust * cmd.forward, T);
@@ -277,21 +253,13 @@ export class GameSession {
     updateDoors(level, FIXED_STEP, (cx, cy) => cellOf(p.x) === cx && cellOf(p.y) === cy, events);
     checkWalkoverTriggers(level, p, events);
 
-    // 7.5) ease the rendered view-floor toward the player's standing tier (after lift
-    // motion above) so step-ups/downs and lift rides glide instead of snapping.
-    this.advanceViewFloor(level.floorHeightAt(cellOf(p.x), cellOf(p.y)), T);
-
     // 8) item pickups.
     updateItems({ world, weapons, skill: this.ctx.skill, events }, T);
 
-    this.hud.update(FIXED_STEP);
     this.levelTimeTics += T;
-    this.animTic += T;
     // Advance the shared walk-bob phase off the level clock (DOOM leveltime). The eye
-    // bob (scene.viewZ) and weapon bob both read p.bob, so they ride the same wave.
+    // bob and weapon bob both read p.bob, so they ride the same wave.
     p.bob = bobPhase(this.levelTimeTics);
-    this.damageFlash = Math.max(0, this.damageFlash - 0.025 * T);
-    this.bonusFlash = Math.max(0, this.bonusFlash - 0.02 * T);
 
     // 9) death + level exit.
     if (p.health <= 0) return 'dead';
@@ -300,20 +268,6 @@ export class GameSession {
       return 'exit';
     }
     return 'continue';
-  }
-
-  /** Move the smoothed view-floor toward `targetZ` by a clamped step (DOOM-like ease):
-   *  proportional to the remaining gap, but never below a minimum so the tail lands
-   *  quickly, and never past the target. `tics` scales the step to the sim cadence. */
-  private advanceViewFloor(targetZ: number, tics: number): void {
-    const dz = targetZ - this.smoothViewFloorZ;
-    const adz = Math.abs(dz);
-    if (adz < 0.01) {
-      this.smoothViewFloorZ = targetZ;
-      return;
-    }
-    const step = Math.min(adz, Math.max(VIEW_FLOOR_MIN_STEP, adz * VIEW_FLOOR_LERP) * tics);
-    this.smoothViewFloorZ += Math.sign(dz) * step;
   }
 
   /** Use-press: open a door or trip a switch-triggered exit/lift just ahead. */
@@ -344,7 +298,7 @@ export class GameSession {
       if ((t.kind !== 'switch' && t.kind !== 'use') || t.x !== cx || t.y !== cy) continue;
       if (t.once && level.hasFired('exit', i)) return false;
       level.pendingExit = data.exits[i]!.kind;
-      events.emit('sfx', { sound: SFX_SWITCH, x: cellX, y: cellY });
+      if (this.presentation) events.emit('sfx', { sound: SFX_SWITCH, x: cellX, y: cellY });
       if (t.once) level.markFired('exit', i);
       return true;
     }
@@ -354,97 +308,12 @@ export class GameSession {
       if ((t.kind !== 'switch' && t.kind !== 'use') || t.x !== cx || t.y !== cy) continue;
       const rt = level.lifts[i];
       if (rt && triggerLift(rt)) {
-        events.emit('sfx', { sound: SFX_LIFT_START, x: cellX, y: cellY });
+        if (this.presentation) events.emit('sfx', { sound: SFX_LIFT_START, x: cellX, y: cellY });
         if (t.once) level.markFired('lift', i);
         return true;
       }
     }
     return false;
-  }
-
-  // ── rendering ────────────────────────────────────────────────────────────────
-
-  renderWorld(ctx2d: CanvasRenderingContext2D, alpha: number): void {
-    const level = this.level;
-    const weapons = this.weapons;
-    if (!level || !weapons) return;
-    const { world, renderer, assets, config } = this.ctx;
-    this.audio.setListener(world.player.x, world.player.y, world.player.angle);
-    // The status bar owns the bottom strip; the 3D view + weapon render above it.
-    const playViewHeight = config.internalHeight - this.hud.barHeightPx(config.internalWidth);
-    // Offset = smoothed view-floor − the actual tier the renderer reads under the
-    // player; folding it into viewZ makes the renderer's eyeZ glide across tiers.
-    const p = world.player;
-    const viewFloorOffset = this.smoothViewFloorZ - level.floorHeightAt(cellOf(p.x), cellOf(p.y));
-    const scene = buildRenderScene(
-      world,
-      level,
-      assets,
-      weapons.getView(),
-      this.animTic,
-      config.fovRatio,
-      playViewHeight,
-      viewFloorOffset,
-    );
-    scene.tint = this.computeTint();
-    renderer.render(scene, alpha);
-    // Automap overlay sits over the world but under the HUD bar (classic DOOM look).
-    if (this.automapOn) {
-      drawAutomap(ctx2d, world, world.player, config.internalWidth, config.internalHeight, {
-        monsters: world.monsters,
-      });
-    }
-    this.hud.composite(renderer, world);
-  }
-
-  /**
-   * Derive the full-screen palette tint from player state (doom-design §5, the
-   * renderer-fx mapping). One tint slot, so by priority: invulnerability invert →
-   * decaying damage red → decaying pickup gold → light-amp bright → radiation green →
-   * berserk red. Returns undefined when nothing is active.
-   */
-  private computeTint(): ScreenTint | undefined {
-    const pw = this.ctx.world.player.powerups;
-    const active = (k: PowerupKind): boolean => {
-      const v = pw[k];
-      return v !== undefined && v !== 0;
-    };
-    if (active('invulnerability')) return { r: 255, g: 255, b: 255, a: 0.15, mode: 'invert' };
-    if (this.damageFlash > 0) return { r: 255, g: 0, b: 0, a: Math.min(0.55, this.damageFlash) };
-    if (this.bonusFlash > 0) return { r: 215, g: 186, b: 69, a: Math.min(0.45, this.bonusFlash) };
-    if (active('lightVisor')) return { r: 255, g: 255, b: 210, a: 0.25, mode: 'bright' };
-    if (active('radSuit')) return { r: 0, g: 255, b: 0, a: 0.18 };
-    if (active('berserk')) return { r: 255, g: 0, b: 0, a: 0.1 };
-    return undefined;
-  }
-
-  // ── episode / intermission flow ──────────────────────────────────────────────
-
-  beginIntermission(): void {
-    const level = this.level;
-    const tally: LevelTally = {
-      kills: this.kills,
-      totalKills: this.totalKills,
-      items: this.items,
-      totalItems: this.totalItems,
-      secrets: this.secrets,
-      totalSecrets: this.totalSecrets,
-      timeSeconds: this.levelTimeTics * SECONDS_PER_TIC,
-      parSeconds: level?.data.par ?? 0,
-    };
-    this.pendingNextId = nextLevelId(EPISODE1, this.currentMapId);
-    const nextName = this.pendingNextId ? mapDataFor(this.pendingNextId)?.name : undefined;
-    this.intermission.start(tally, { finishedName: level?.data.name ?? '', nextName });
-  }
-
-  /** Advance once the intermission screen finishes. */
-  advanceAfterIntermission(): 'next' | 'victory' {
-    if (this.pendingNextId === null) {
-      this.teardownLevel();
-      return 'victory';
-    }
-    this.startLevel(this.pendingNextId);
-    return 'next';
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────────
@@ -460,15 +329,5 @@ export class GameSession {
     this.totalKills = monsters;
     this.totalItems = items;
     this.totalSecrets = data.secretSectors.length;
-  }
-
-  private locate(id: number): { x: number; y: number } | undefined {
-    const w = this.ctx.world;
-    if (w.player.id === id) return { x: w.player.x, y: w.player.y };
-    return (
-      w.monsters.find((e) => e.id === id) ??
-      w.projectiles.find((e) => e.id === id) ??
-      w.pickups.find((e) => e.id === id)
-    );
   }
 }

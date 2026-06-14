@@ -12,8 +12,8 @@ import type {
   IWorld,
   Player,
   RenderConfig,
-  Renderer,
 } from '../core';
+import type { Renderer } from '../render';
 import {
   EventBus,
   INTERNAL_WIDTH_DEFAULT,

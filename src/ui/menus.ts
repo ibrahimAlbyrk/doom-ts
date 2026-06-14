@@ -52,7 +52,7 @@ export interface MenuContext {
   readonly onResolutionChange?: () => void;
 }
 
-type PageId = 'main' | 'episodes' | 'skill' | 'options' | 'keybinds' | 'pause';
+type PageId = 'main' | 'multiplayer' | 'episodes' | 'skill' | 'options' | 'keybinds' | 'pause';
 
 interface MenuItem {
   label: string;
@@ -69,6 +69,7 @@ interface Frame {
 
 const PAGE_TITLE: Record<PageId, string> = {
   main: 'DOOM // TS',
+  multiplayer: 'MULTIPLAYER',
   episodes: 'WHICH EPISODE',
   skill: 'CHOOSE SKILL',
   options: 'OPTIONS',
@@ -265,10 +266,21 @@ export class Menus {
     switch (page) {
       case 'main':
         return [
-          { label: 'NEW GAME', onSelect: () => this.push('episodes') },
+          // Offline single-player is first-class and always available — it runs the full
+          // game in-process via a LocalSession, no server needed (multiplayer-plan §0.1).
+          { label: 'SINGLE PLAYER', onSelect: () => this.push('episodes') },
+          { label: 'MULTIPLAYER', onSelect: () => this.push('multiplayer') },
           { label: 'OPTIONS', onSelect: () => this.push('options') },
           { label: 'CREDITS', onSelect: () => ({ type: 'showCredits' }) },
           { label: 'QUIT', onSelect: () => ({ type: 'quit' }) },
+        ];
+      case 'multiplayer':
+        // Host/Join are the online (RemoteSession) path — the netcode + lobby land in a
+        // later phase (multiplayer-plan P2/P3b). Offline single-player is unaffected.
+        return [
+          { label: 'HOST GAME', value: 'SOON', onSelect: () => null },
+          { label: 'JOIN GAME', value: 'SOON', onSelect: () => null },
+          { label: 'BACK', onSelect: () => this.back() },
         ];
       case 'episodes':
         return [EPISODE1].map((ep, i) => ({

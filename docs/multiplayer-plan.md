@@ -1,8 +1,11 @@
 # DOOM-TS Online — Multiplayer Implementation Plan
 
-> **Status:** planning / implementation-ready. **No networking code yet.**
-> This is the build plan that synthesizes the two research docs into an actionable,
-> phased roadmap, and fully specifies the new **lobby/room** requirement the user asked for.
+> **Status:** **P0 (FOUNDATION) IMPLEMENTED** on the multiplayer trunk. **No networking code
+> yet** — transport/lobby are P2+. P0 delivered the headless + deterministic sim, the `core`
+> DOM split, and the **offline-first Session abstraction** (§0.1) so single-player runs with
+> no server. This build plan synthesizes the two research docs into a phased roadmap, fully
+> specifies the **lobby/room** requirement, and adds the user's **offline coexistence**
+> requirement (§0.1) — single-player offline play is first-class and always available.
 >
 > **Read the research first — this doc builds on them and does not repeat them:**
 > - `docs/research/multiplayer-netcode.md` — transport, server-authoritative netcode,
@@ -53,6 +56,55 @@ reconciliation, and lag-comp are **still ours to build** — no framework does t
 > fall back to the [deploy §4] hand-rolled `ws` lobby — the lobby *state machine, UI, and
 > message set in §3 are transport-agnostic and do not change*, only their implementation
 > substrate does.
+
+---
+
+## 0.1 Offline-first: the Session abstraction (single-player NEVER needs a server)
+
+**User requirement (new):** single-player **offline** play is first-class and **always
+available** — playing with friends is opt-in, never mandatory. The game runs the full
+single-player campaign with **no server, no network, no Colyseus**, exactly as it does today.
+**Implemented in P0.**
+
+This is delivered by a **Session abstraction** — one interface, two implementations:
+
+```
+        ┌─────────────────── GameClient (browser presenter) ───────────────────┐
+ states │  input → TicCommand      render scene / HUD / menus / audio            │
+   ───▶ │        │                          ▲ world / currentLevel / weaponView  │
+        │        ▼                          │                                    │
+        │   ┌──────────────────────── Session (interface) ────────────────────┐ │
+        │   │  LocalSession  (OFFLINE, default)   RemoteSession (ONLINE, P2+)  │ │
+        │   │  owns a GameSession in-process      sends TicCommands to a       │ │
+        │   │  → runs the FULL sim locally        Colyseus host via a          │ │
+        │   │  → NO server / network needed       SessionTransport; mirrors    │ │
+        │   │                                     snapshots (P0 ships the seam) │ │
+        │   └──────────────────────────────────────────────────────────────────┘ │
+        └────────────────────────────────────────────────────────────────────────┘
+```
+
+- **`GameSession`** (`src/game/session.ts`) — the **headless, deterministic sim**, driven by
+  a serializable `TicCommand`. No canvas/audio/DOM; runs in the browser AND under Node (the
+  authoritative server). A `presentation` flag gates cosmetic SFX so the server emits only
+  gameplay events. This is the §1.1 replication seam, now actually headless.
+- **`Session`** (`src/session/session.ts`) — the boundary between the client app and the
+  authority: `tic(cmd)`, level lifecycle, and read access to `world` / `currentLevel` /
+  `getWeaponView()`. The presenter renders from it without knowing local vs remote.
+- **`LocalSession`** (`src/session/local-session.ts`) — **offline single-player**. Wraps a
+  `GameSession` and runs every `tic()` in-process; the SP campaign routes through it and
+  plays identically. **This is the default the client boots with.**
+- **`RemoteSession`** (`src/session/remote-session.ts`) — **online**. Implements the same
+  `Session` interface over a `SessionTransport` (the Colyseus seam). Built in P2+; P0 ships
+  only the boundary (a documented stub), so offline play never depends on networking code.
+- **`GameClient`** (`src/game/client.ts`) — the browser presenter (render/HUD/menus/audio/
+  input→command). Identical for local and remote; it just holds a `Session`.
+
+**Main menu:** `SINGLE PLAYER` (offline — the LocalSession path) and `MULTIPLAYER` (host/join
+— the RemoteSession path, lands P3b). Single-player launches the full game with no server.
+
+> **Invariant for every phase below:** single-player offline keeps working. No phase may make
+> a running server a precondition for solo play. The multi-player refactor (P1: `world.player`
+> → `world.players` map) makes the offline path "a players map of size 1" — it does not remove it.
 
 ---
 
@@ -119,42 +171,68 @@ prediction replay uses the same math.
 
 ---
 
-## 2. Repo restructure — monorepo (shared sim / client / server)
+## 2. Repo restructure — shared sim + server/ (P0 implemented; monorepo optional later)
 
-Adopt the npm-workspaces monorepo from [deploy §2] verbatim; summarized here so the phasing
-in §6 references concrete targets. **Do not** introduce pnpm/turbo/nx ([deploy §2.2]).
+**P0 decision — simpler than the full monorepo.** Rather than convert to npm workspaces +
+`packages/*` up front (a wide, risky move rewriting every import path, with single-player as
+collateral), P0 keeps the single Vite app in `src/` and carves out the shared-sim boundary
+**logically** — *enforced* by a no-DOM typecheck (`tsconfig.sim.json`) — plus a `server/` dir
+that imports the sim directly. This kept SP green at every step. The full
+`@doom/shared`/`client`/`server` workspace split from [deploy §2] remains an **optional later
+refactor** (e.g. once the server grows its own dependency tree); it changes packaging, not the
+architecture here. **Do not** introduce pnpm/turbo/nx ([deploy §2.2]) if/when it happens.
+
+**Implemented P0 layout:**
 
 ```
 doom-ts/
-├── package.json            # { "private": true, "workspaces": ["packages/*"] }
-├── tsconfig.base.json      # today's strict options
-└── packages/
-    ├── shared/   @doom/shared  — THE SIM, runs on Node AND browser
-    │   └── src/{core, data, world, combat, ai, entities, weapons, items, net}
-    │       core/ = DOM-free contracts only (B6); net/ = NEW shared message + Schema types
-    ├── client/  @doom/client  — existing Vite app
-    │   └── src/{render, audio, input, ui, game, main.ts}  + core/{render,audio,input}.ts (the DOM interfaces moved out of shared)
-    └── server/  @doom/server  — authoritative Colyseus/Node server
-        └── src/{index.ts, room.ts(=match), lobby.ts, net/, headless-context.ts}
+├── tsconfig.json           # client build (DOM lib) — the Vite app
+├── tsconfig.sim.json       # NO-DOM typecheck of the shared sim → PROVES it runs under Node
+├── src/
+│   ├── core/               # DOM-FREE contracts: types, vec2, math, rng, events, enums,
+│   │                       #   constants, defs, render DATA shapes, SimContext   (B6 split)
+│   ├── data/ world/ combat/ ai/ entities/ weapons/ items/ levels/   # THE SHARED SIM (DOM-free)
+│   ├── game/
+│   │   ├── session.ts      # GameSession — headless deterministic sim (presentation flag)
+│   │   ├── client.ts       # GameClient  — browser presenter (render/HUD/menus/audio/input)
+│   │   ├── types.ts        # GameContext / IGameState (DOM-coupled → CLIENT only)  (B6 split)
+│   │   └── states.ts game.ts context.ts scene.ts   # client integration
+│   ├── session/            # the Session abstraction (§0.1)
+│   │   ├── session.ts      # Session interface + SimStats
+│   │   ├── local-session.ts  # LocalSession (offline single-player, default)
+│   │   └── remote-session.ts # RemoteSession + SessionTransport (the Colyseus seam, P2+)
+│   ├── render/ audio/ input/ ui/ assets/   # browser-only (Renderer interface now in render/)
+│   └── main.ts
+└── server/
+    ├── headless-sim.ts     # P0: runs a level headless under Node → deterministic checksum
+    └── README.md           # P2: the Colyseus Room wrapping the same GameSession lands here
 ```
 
-What moves where (maps onto the [netcode §5.5] server/client table):
+What lives where (maps onto the [netcode §5.5] server/client table):
 
-- **To `shared/`:** `core` (DOM-free parts), `data`, `world`, `combat`, `ai`, `entities`,
-  `weapons` (cooldown/ammo logic), `items`. These are the authoritative sim, imported by
-  both client (for prediction) and server (as authority).
-- **Stays client-only:** `render`, `audio`, `input`, `ui`, the canvas half of
-  `game/session.ts`, `main.ts`.
-- **New `server/`:** the Colyseus `Room` wrapping a headless `GameSession`, the lobby
-  metadata, the authoritative loop, mode rules, lag-comp ring buffer.
-- **New `shared/net/`:** the message/event types and Colyseus `@type` Schema classes that
-  client and server agree on (room lifecycle messages from §3.4, `TicCommand` wire form,
-  snapshot Schema).
-- **The split (B6):** `core/render.ts`, `core/audio.ts`, `core/input.ts` relocate to the
-  client package.
+- **Shared sim (DOM-free):** `src/core` (DOM-free contracts), `data`, `world`, `combat`, `ai`,
+  `entities`, `weapons`, `items`, `levels`, and the headless `game/session.ts`. Imported by
+  both the client (via `LocalSession`, and later prediction) and the server (as authority).
+- **Client-only:** `render`, `audio`, `input`, `ui`, `assets`, `game/client.ts`,
+  `game/types.ts`, `game/states.ts`/`game.ts`/`scene.ts`, `src/session/`, `main.ts`.
+- **`server/`:** P0 = `headless-sim.ts` (the headless smoke runner + DOM-free proof). P2 adds
+  the Colyseus `Room` wrapping a headless `GameSession`, the lobby metadata, the authoritative
+  loop, mode rules, lag-comp ring buffer.
+- **Net types:** the transport seam is `SessionTransport` in `src/session/remote-session.ts`
+  today; P2 adds the wire message/event types + Colyseus `@type` Schema (a `src/net/` or
+  `server/net/` — §3.4, `TicCommand` wire form, snapshot Schema).
+- **The DOM split (B6), as implemented:** the **`Renderer`** service interface moved
+  `core/render.ts` → `src/render/contract.ts`; **`GameContext`/`IGameState`** moved
+  `core/types.ts` → `src/game/types.ts`; a DOM-free **`SimContext`** was added to `core`. The
+  render DATA shapes (Camera/Texture/SpriteFrame/RenderScene/…) stay in `core` (the sim uses
+  them, DOM-free). The `Audio`/`Input` *interfaces* stayed in `core` — they carry no DOM types,
+  so they don't block the Node build; only the genuinely DOM-coupled contracts moved. (This is
+  a deliberate, smaller variant of [deploy §2.3 option A] that still makes the sim Node-clean.)
 
-Mechanics (symlinking, Vite consuming `@doom/shared`, server via `tsx`/`tsc`, TS project
-references): [deploy §2.1].
+Mechanics: the server imports the sim from `../src` directly (no symlinks/workspaces in P0);
+Vite builds the client as before; the sim's headlessness is verified by `npm run typecheck:sim`
+(no `lib.dom`) and `npm run sim:headless` (runs it under `tsx`). Project references / `@doom/*`
+packaging is the optional later step.
 
 ---
 
@@ -425,15 +503,23 @@ day one** ([netcode §3.3]) so the Colyseus→geckos/WebRTC option stays open. T
 [netcode §10] with the monorepo phase (P0), an explicit lobby phase (the user's ask, P3b),
 and per-phase acceptance.
 
-**P0 — Monorepo + shared + DOM split (no networking).** *~M (mechanical but wide).*
-- Convert to npm workspaces; create `shared`/`client`/`server` packages (§2).
-- Split DOM types out of `core` (B6) — **ratify the `ARCHITECTURE.md` core-contract change
-  first**.
-- Headless-ize `GameSession`: `presentation` flag (B5); fold mouse-yaw into `TicCommand`
-  + add `seq` (B4); extract `applyPlayerCommand` (§1.2).
-- ✅ *Accept:* SP game still runs unchanged from `client`; a Node script in `server` runs
-  one full level headless with null Renderer/Audio/Input, same seed → same end-state
-  checksum.
+**P0 — Foundation: headless sim + DOM split + offline Session abstraction (no networking). ✅ DONE.**
+- ✅ Shared-sim boundary via `src/` + `server/` + `tsconfig.sim.json` (the lighter structure,
+  §2) — **not** the full workspaces monorepo (deferred, optional).
+- ✅ Split DOM types out of `core` (B6): `Renderer` → `src/render/contract.ts`,
+  `GameContext`/`IGameState` → `src/game/types.ts`, DOM-free `SimContext` added; ratified in
+  `ARCHITECTURE.md`; verified Node-clean by `tsconfig.sim.json`.
+- ✅ Headless-ize `GameSession`: `presentation` flag (B5); fold mouse-yaw into
+  `TicCommand.lookTurn` + add `seq` (B4); `tic(cmd)` runs in the browser AND under Node.
+- ✅ Offline Session abstraction (§0.1): `Session` interface + `LocalSession` (offline SP, the
+  boot default) + `RemoteSession`/`SessionTransport` seam; `GameClient` presenter; main menu
+  `SINGLE PLAYER` (offline) / `MULTIPLAYER` (host/join, SOON).
+- ⏭ Deferred to P1/P3a: extracting a pure `applyPlayerCommand(world, playerId, cmd, …)` from
+  `tic()` (§1.2) — needed only when client prediction/replay lands, not for the P0 foundation.
+- ✅ *Accept (met):* SP plays offline unchanged — **browser-verified**: start game, move,
+  shoot, kill an enemy, ride a lift, gameover→restart, **no server**. `npm run sim:headless`
+  runs a full level headless (null Renderer/Audio/Input), same seed → same end-state checksum.
+  `npm run build` exits 0; 6/6 tests pass; `npm run typecheck:sim` passes (no `lib.dom`).
 
 **P1 — Multi-player state, single process.** *~M.*
 - `world.player` → `world.players` map (B1); update all readers; server-only `allocId`
@@ -495,6 +581,11 @@ blocker fixes); **P2→P3a** are the netcode core; **P3b** is the user's lobby a
 built in parallel with P3a once P2's room skeleton exists; **P4/P5** are the two modes;
 **P6** ships it. Optional later: geckos.io/WebRTC transport swap if latency telemetry
 warrants ([netcode §10 P6], [deploy §1.3]).
+
+**Offline invariant (every phase):** single-player offline (the `LocalSession` path, §0.1)
+keeps working. Each phase is additive behind the `Session` seam — P1's `world.player` →
+`world.players` map makes solo play "a map of size 1", P2+ add the `RemoteSession` alongside
+`LocalSession`, never replacing it. A running server is **never** a precondition for solo play.
 
 ---
 

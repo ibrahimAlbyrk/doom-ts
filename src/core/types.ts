@@ -10,13 +10,10 @@ import type {
   KeyColor,
   Faction,
   MonsterAIState,
-  GameStateId,
   SkillId,
 } from './enums';
 import type { DamageRoll } from './defs';
-import type { Renderer, RenderConfig, Texture, SpriteFrame } from './render';
-import type { Audio } from './audio';
-import type { Input } from './input';
+import type { Texture, SpriteFrame } from './render';
 import type { EventBus, GameEventMap } from './events';
 import type { Rng } from './rng';
 
@@ -236,31 +233,22 @@ export interface IAssetStore {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Game-state machine contract (web-arch.md §3).
+// Headless simulation context (multiplayer DOM-split, docs/multiplayer-plan.md §0.1).
+// The DOM-free service bag the authoritative GameSession runs against — identical in
+// the browser (driven by LocalSession) and under Node (the authoritative server), so
+// the sim never sees a renderer/audio/input/canvas. The client's full GameContext
+// extends this with the browser services; it lives in src/game/types.ts (CLIENT-only,
+// since it carries DOM types). GameContext/IGameState moved there in the DOM split.
 // ════════════════════════════════════════════════════════════════════════════
 
-/** Shared-services bag threaded into every state. */
-export interface GameContext {
-  readonly canvas: HTMLCanvasElement;
-  readonly renderer: Renderer;
-  readonly audio: Audio;
-  readonly input: Input;
-  readonly assets: IAssetStore;
+/** DOM-free services the headless sim needs: entity registry, typed event bus, the
+ *  single seeded RNG, and the active skill / episode position. No presentation. */
+export interface SimContext {
   readonly world: IWorld;
   readonly events: EventBus<GameEventMap>;
   readonly rng: Rng;
-  /** Request a state transition (the Game owns the actual swap). */
-  transition(to: GameStateId): void;
-  config: RenderConfig; // live render settings
+  /** Active skill — drives the player-damage multiplier + thing-spawn filter. */
   skill: SkillId;
-  episodeLevel: number; // index into the episode's level list
-}
-
-export interface IGameState {
-  readonly id: GameStateId;
-  onEnter(ctx: GameContext): void;
-  onExit(ctx: GameContext): void;
-  update(dt: number): void;
-  /** Draw to the visible 2D context; `alpha` is fixed-step interpolation. */
-  render(ctx2d: CanvasRenderingContext2D, alpha: number): void;
+  /** Index into the episode's level list. */
+  episodeLevel: number;
 }

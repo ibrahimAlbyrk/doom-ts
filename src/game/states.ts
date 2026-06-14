@@ -2,11 +2,12 @@
 // BOOT → LOADING → TITLE → MENU → PLAYING ⇄ PAUSED → INTERMISSION → (next | VICTORY),
 // PLAYING → GAMEOVER, and the Freedoom CREDITS screen. Each state delegates the real
 // work to the shared GameSession; the states own only screen flow + per-screen draw.
-import type { GameStateId, IGameState, GameContext } from '../core';
+import type { GameStateId } from '../core';
 import { FIXED_STEP } from '../core';
+import type { IGameState, GameContext } from './types';
 import { AssetStore, AssetLoader } from '../assets';
 import { drawTitle, drawGameOver, drawCredits, readMenuInput } from '../ui';
-import type { GameSession } from './session';
+import type { GameClient } from './client';
 
 function fill(ctx: CanvasRenderingContext2D, w: number, h: number, color: string): void {
   ctx.fillStyle = color;
@@ -32,7 +33,7 @@ abstract class BaseState implements IGameState {
   abstract readonly id: GameStateId;
   protected ctx!: GameContext;
 
-  constructor(protected readonly session: GameSession) {}
+  constructor(protected readonly session: GameClient) {}
 
   onEnter(ctx: GameContext): void {
     this.ctx = ctx;
@@ -265,7 +266,7 @@ class CreditsState extends BaseState {
   }
 }
 
-export function createStates(session: GameSession): Record<GameStateId, IGameState> {
+export function createStates(session: GameClient): Record<GameStateId, IGameState> {
   return {
     boot: new BootState(session),
     loading: new LoadingState(session),

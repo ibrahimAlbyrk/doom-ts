@@ -1,8 +1,10 @@
-// FROZEN CONTRACT — the renderer interface and the data it consumes.
-// The raycaster (src/render) implements `Renderer`; the asset store produces
-// `Texture`/`SpriteFrame`; the game state builds a `RenderScene` each frame.
+// FROZEN CONTRACT — the DOM-free render DATA the sim/scene produce and the renderer
+// consumes. The `Renderer` SERVICE interface (which takes a DOM canvas) lives in the
+// client package now (`src/render/contract.ts`) so this stays compilable under Node —
+// the shared sim references these data shapes but never the canvas-bound service (the
+// multiplayer DOM-split, docs/multiplayer-plan.md §0.1 / ARCHITECTURE.md decision 5).
 // Render math/derivation: docs/research/engine.md.
-import type { ILevelRuntime, IAssetStore } from './types';
+import type { ILevelRuntime } from './types';
 
 /** Player camera in cell-space (engine.md §0). dir & plane stay perpendicular. */
 export interface Camera {
@@ -107,21 +109,4 @@ export interface RenderScene {
    * internal height.
    */
   playViewHeight?: number;
-}
-
-export interface Renderer {
-  /** Bind to the display canvas and size the internal backbuffer. */
-  init(canvas: HTMLCanvasElement, config: RenderConfig): void;
-  /** Re-create the internal backbuffer after a resolution change. */
-  resize(config: RenderConfig): void;
-  /** Build the shade colormaps from the asset palette (engine.md §5.1). */
-  setPalette(palette: Uint32Array): void;
-  /** Bind the decoded-asset store so wall/flat/sky texture keys resolve to Textures. */
-  setAssets(store: IAssetStore): void;
-  /** Internal render resolution; UI draws its HUD layer at this size (HUD-blit hook). */
-  getViewport(): { width: number; height: number };
-  /** Composite a UI-owned layer (drawn at internal resolution) onto the display canvas. */
-  blitHudLayer(layer: CanvasImageSource): void;
-  /** Draw one world frame; `alpha` is the fixed-step interpolation factor. */
-  render(scene: RenderScene, alpha: number): void;
 }

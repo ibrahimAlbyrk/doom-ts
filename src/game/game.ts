@@ -2,7 +2,7 @@
 // frozen service interfaces (src/core) to their concrete implementations. This is the
 // integration hub: it sits at the top of the dependency graph and nothing imports it
 // back. Loop math: web-arch.md §2 / engine.md §8.
-import type { GameStateId, IGameState, GameContext, RenderConfig } from '../core';
+import type { GameStateId, RenderConfig } from '../core';
 import {
   DEFAULT_BINDINGS,
   FIXED_STEP,
@@ -10,16 +10,17 @@ import {
   FOV_PLANE_RATIO,
   COLORMAP_LEVELS,
 } from '../core';
+import type { IGameState, GameContext } from './types';
 import { DEFAULT_SKILL } from '../data';
 import { createServices } from './context';
 import { createStates } from './states';
-import { GameSession } from './session';
+import { GameClient } from './client';
 import { loadResolution } from './resolution-store';
 
 export class Game {
   private readonly ctx2d: CanvasRenderingContext2D;
   private readonly context: GameContext;
-  private readonly session: GameSession;
+  private readonly session: GameClient;
   private readonly states: Record<GameStateId, IGameState>;
   private currentKey: GameStateId = 'boot';
 
@@ -58,7 +59,7 @@ export class Game {
       episodeLevel: 0,
     };
 
-    this.session = new GameSession(this.context);
+    this.session = new GameClient(this.context);
     this.states = createStates(this.session);
     this.states[this.currentKey].onEnter(this.context);
     document.addEventListener('visibilitychange', this.onVisibility);
@@ -94,7 +95,7 @@ export class Game {
   get debug(): {
     state: () => GameStateId;
     context: GameContext;
-    session: GameSession;
+    session: GameClient;
     transition: (to: GameStateId) => void;
   } {
     return {

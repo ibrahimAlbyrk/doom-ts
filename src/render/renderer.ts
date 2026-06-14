@@ -1,16 +1,11 @@
-// Canvas2DRenderer — implements the Renderer contract (src/core/render.ts).
+// Canvas2DRenderer — implements the Renderer contract (src/render/contract.ts).
 // Per-frame order (engine.md §9): floor/ceiling cast → wall cast (+zBuffer) → sprites
 // (z-tested) → weapon overlay → putImageData. The internal backbuffer is sized to the
 // configured internal resolution and blitted 1:1; the display canvas attribute size is
 // set to that resolution and the browser upscales nearest-neighbor via CSS
 // `image-rendering: pixelated` (engine.md §6.2, "skip the second canvas").
-import type {
-  Renderer,
-  RenderConfig,
-  RenderScene,
-  Texture,
-  IAssetStore,
-} from '../core';
+import type { RenderConfig, RenderScene, Texture, IAssetStore } from '../core';
+import type { Renderer } from './contract';
 import { COLORMAP_LEVELS, CELL_SIZE, VIEW_HEIGHT, TAU } from '../core';
 import { buildColormaps } from './colormap';
 import { buildBrightness } from './lighting';

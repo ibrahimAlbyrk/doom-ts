@@ -12,12 +12,12 @@ import type {
   IWorld,
   Player,
   PlayerInventory,
-  Renderer,
   AmmoType,
   KeyColor,
   EventBus,
   GameEventMap,
 } from '../core';
+import type { Renderer } from '../render';
 import { WEAPONS, ITEMS_BY_ID, POWERUPS } from '../data';
 import { TextureCache, drawText, HUD_FONT } from './gfx';
 
