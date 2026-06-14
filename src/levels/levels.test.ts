@@ -13,6 +13,7 @@ import { World } from '../entities';
 import { positionFits, cellOf } from '../world';
 import { EPISODE1_MAPS } from './maps';
 import { loadLevel, validateMap, thingSpawnsAtSkill } from './level-loader';
+import { segmentBlocked } from '../combat';
 import { analyze } from './solver';
 import { EPISODE1, nextLevelId } from './episode';
 
@@ -77,8 +78,32 @@ for (const map of EPISODE1_MAPS) {
   const normal = world.monsters.length;
   const hard = load(map, 4).monsters.length;
   ok(easy <= normal && normal <= hard, `${map.id} spawn counts monotonic by skill (${easy}/${normal}/${hard})`);
+  ok(easy < hard, `${map.id} easy spawns strictly fewer than hard (${easy} < ${hard})`);
   episodeEasy += easy;
   episodeHard += hard;
+
+  // (5b) Start-safety regression guards (the "wall of fire on map open" fix):
+  //   - NO shotgun guy (9–45 instant hitscan) within 8 cells of the player start with
+  //     line-of-sight at spawn, on ANY skill. Doors are solid until opened, so
+  //     segmentBlocked at spawn == the real map-open sightline.
+  //   - On easy, at most 3 ranged monsters may see the start at once (no projectile wall).
+  const RANGED = new Set(['zombieman', 'shotgunGuy', 'imp', 'cacodemon', 'baron', 'hellKnight', 'cyberdemon', 'spiderMastermind']);
+  const sx = map.playerStart.x;
+  const sy = map.playerStart.y;
+  const cellsFromStart = (m: { x: number; y: number }): number => Math.hypot((m.x - sx) / map.cellSize, (m.y - sy) / map.cellSize);
+  for (const sk of [1, 2, 3, 4, 5] as const) {
+    const w = load(map, sk);
+    for (const m of w.monsters) {
+      if (m.type !== 'shotgunGuy') continue;
+      const seesStart = !segmentBlocked(w.level!, m.x, m.y, sx, sy);
+      ok(!(seesStart && cellsFromStart(m) < 8), `${map.id} skill ${sk}: shotgun guy ${cellsFromStart(m).toFixed(1)}c from start with LOS — must be ≥8c or behind cover`);
+    }
+  }
+  const easyWorld = load(map, 1);
+  const rangedSeeingStart = easyWorld.monsters.filter(
+    (m) => RANGED.has(m.type) && !segmentBlocked(easyWorld.level!, m.x, m.y, sx, sy),
+  ).length;
+  ok(rangedSeeingStart <= 3, `${map.id} easy: ≤3 ranged monsters with LOS to start at spawn (got ${rangedSeeingStart})`);
 
   // (6) solvability: keys reachable, every locked door openable, an exit reachable.
   const r = analyze(map);

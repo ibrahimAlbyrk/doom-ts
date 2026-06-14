@@ -93,11 +93,11 @@ export const E1M1 = compile({
     { id: 3004, x: 11, y: 11, angle: 0 }, // zombieman
     { id: 3004, x: 21, y: 11, angle: 180 }, // zombieman
     { id: 3004, x: 15, y: 3, angle: 90 }, // zombieman
-    { id: 3004, x: 18, y: 15, angle: 270 }, // zombieman
+    { id: 3004, x: 18, y: 15, angle: 270, skill: 6 }, // zombieman — normal+hard (trim easy to 12)
     { id: 3001, x: 17, y: 8, angle: 90 }, // imp (pit)
     { id: 3001, x: 16, y: 10, angle: 0 }, // imp (pit)
     { id: 3001, x: 14, y: 5, angle: 180 }, // imp
-    { id: 3001, x: 20, y: 5, angle: 180 }, // imp
+    { id: 3002, x: 20, y: 5, angle: 180 }, // demon (adds easy melee — eases the all-ranged opening)
     { id: 9, x: 16, y: 12, angle: 90 }, // shotgun guy
     { id: 9, x: 13, y: 7, angle: 0 }, // shotgun guy
     { id: 3002, x: 14, y: 15, angle: 90 }, // demon — guards the blue door (telegraphed)

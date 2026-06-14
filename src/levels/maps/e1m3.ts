@@ -116,11 +116,11 @@ export const E1M3 = compile({
     { id: 2018, x: 1, y: 9 }, // green armor (secret)
     { id: 2015, x: 1, y: 10 }, // armor bonus (secret)
     // Monsters — ~40 on HMP (28 easy / 48 UV). Demons/spectres/lost souls + first caco.
-    { id: 3004, x: 5, y: 15, angle: 0 }, // zombieman
+    { id: 3004, x: 14, y: 16, angle: 0 }, // zombieman (pulled back from the start cave to ≥8c)
     { id: 3004, x: 9, y: 6, angle: 90 }, // zombieman
     { id: 3004, x: 20, y: 12, angle: 90 }, // zombieman
     { id: 3004, x: 23, y: 18, angle: 180 }, // zombieman
-    { id: 9, x: 12, y: 16, angle: 0 }, // shotgun guy
+    { id: 9, x: 12, y: 16, angle: 0, skill: 6 }, // shotgun guy — normal+hard (off easy: keeps easy ≤3 ranged with LOS to start)
     { id: 9, x: 9, y: 27, angle: 90 }, // shotgun guy
     { id: 9, x: 21, y: 16, angle: 180 }, // shotgun guy
     { id: 9, x: 19, y: 19, angle: 90 }, // shotgun guy
@@ -131,18 +131,18 @@ export const E1M3 = compile({
     { id: 3001, x: 29, y: 9, angle: 180 }, // imp
     { id: 3001, x: 33, y: 11, angle: 180 }, // imp
     { id: 3001, x: 31, y: 27, angle: 270 }, // imp
-    { id: 3001, x: 36, y: 9, angle: 180 }, // imp
+    { id: 3001, x: 36, y: 9, angle: 180, skill: 4 }, // imp — hard only (thin the easy maze)
     { id: 3002, x: 3, y: 13, angle: 0 }, // demon
     { id: 3002, x: 13, y: 19, angle: 90 }, // demon
     { id: 3002, x: 20, y: 18, angle: 180 }, // demon
     { id: 3002, x: 28, y: 27, angle: 180 }, // demon
     { id: 58, x: 29, y: 17, angle: 180 }, // spectre (maze)
-    { id: 58, x: 33, y: 23, angle: 180 }, // spectre (maze)
+    { id: 58, x: 33, y: 23, angle: 180, skill: 4 }, // spectre (maze) — hard only (thin the easy maze)
     { id: 58, x: 31, y: 13, angle: 270 }, // spectre (maze)
     { id: 3006, x: 29, y: 11, angle: 180 }, // lost soul (maze)
     { id: 3006, x: 33, y: 17, angle: 180 }, // lost soul (maze)
     { id: 3006, x: 31, y: 19, angle: 270 }, // lost soul (maze)
-    { id: 3006, x: 35, y: 23, angle: 180 }, // lost soul (maze)
+    { id: 3006, x: 35, y: 23, angle: 180, skill: 4 }, // lost soul (maze) — hard only (thin the easy maze)
     { id: 3005, x: 21, y: 12, angle: 90 }, // cacodemon — guards the comm beacon (debut)
     // higher-skill extras (6 = normal+hard, 4 = hard-only)
     { id: 3004, x: 10, y: 27, angle: 90, skill: 6 }, // zombieman

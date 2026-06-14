@@ -312,8 +312,26 @@ function testInfightingSurface(): void {
   ok((b as Monster).health < ENEMIES.zombieman.health, 'monster B actually took splash damage');
 }
 
+// ── 9. skill damage scaling: ITYTD (skill 1) halves the damage the player takes ─
+function testSkillDamageScaling(): void {
+  console.log('skill damage scaling (ITYTD halves player damage)');
+  const taken = (skill: 1 | 3, amount: number): number => {
+    const { combat } = buses();
+    const world = freshWorld();
+    world.skill = skill;
+    world.player.health = 100;
+    world.player.armor = { points: 0, factor: 0 };
+    applyDamage(world, world.player, amount, 999, 'monster', new Rng(1), combat, { x: world.player.x - 10, y: world.player.y });
+    return 100 - world.player.health;
+  };
+  ok(taken(1, 40) === 20, 'ITYTD: 40 dmg → 20 taken (half)');
+  ok(taken(3, 40) === 40, 'HMP: 40 dmg → 40 taken (full)');
+  ok(taken(1, 9) === 4, "ITYTD floors odd damage like DOOM's damage>>=1: 9 → 4");
+}
+
 // ── run ──────────────────────────────────────────────────────────────────────
 testFactories();
+testSkillDamageScaling();
 testPistolKillsZombieman();
 testShotgunOneShotKill();
 testRocketSplashLos();

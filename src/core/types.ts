@@ -216,6 +216,7 @@ export interface IWorld {
   projectiles: Projectile[];
   pickups: Pickup[];
   level: ILevelRuntime | null;
+  skill: SkillId; // active skill — drives the player-damage multiplier (loadLevel sets it)
   allocId(): number;
   removeMonster(id: number): void;
   removeProjectile(id: number): void;

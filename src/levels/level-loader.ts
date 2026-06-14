@@ -35,6 +35,7 @@ export function loadLevel(
   world.reset();
   const level = new LevelRuntime(data);
   world.level = level;
+  world.skill = skill; // combat reads this to scale player damage (ITYTD takes half)
 
   const p = world.player;
   p.x = data.playerStart.x;

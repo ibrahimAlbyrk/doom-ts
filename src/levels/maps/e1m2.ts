@@ -112,12 +112,12 @@ export const E1M2 = compile({
     { id: 3004, x: 26, y: 10, angle: 180 }, // zombieman
     { id: 3004, x: 11, y: 21, angle: 0 }, // zombieman
     { id: 3004, x: 26, y: 21, angle: 180 }, // zombieman
-    { id: 3004, x: 20, y: 5, angle: 90 }, // zombieman
+    { id: 3004, x: 26, y: 4, angle: 180 }, // zombieman (pulled back from start to ≥8c)
     { id: 3004, x: 7, y: 17, angle: 0 }, // zombieman
-    { id: 3004, x: 34, y: 24, angle: 270 }, // zombieman (island)
+    { id: 3004, x: 34, y: 24, angle: 270, skill: 4 }, // zombieman (island) — hard only (trim easy to 18)
     { id: 9, x: 13, y: 20, angle: 90 }, // shotgun guy
     { id: 9, x: 24, y: 12, angle: 180 }, // shotgun guy
-    { id: 9, x: 19, y: 8, angle: 180 }, // shotgun guy
+    { id: 9, x: 10, y: 12, angle: 0, skill: 6 }, // shotgun guy — normal+hard, off the entrance door (easy shotgunGuy cap ≤3)
     { id: 9, x: 7, y: 21, angle: 0 }, // shotgun guy
     { id: 3001, x: 11, y: 9, angle: 90 }, // imp
     { id: 3001, x: 26, y: 19, angle: 180 }, // imp
@@ -125,7 +125,7 @@ export const E1M2 = compile({
     { id: 3001, x: 27, y: 20, angle: 180 }, // imp
     { id: 3001, x: 13, y: 17, angle: 90 }, // imp
     { id: 3001, x: 24, y: 17, angle: 180 }, // imp
-    { id: 3001, x: 33, y: 26, angle: 270 }, // imp (island)
+    { id: 3001, x: 33, y: 26, angle: 270, skill: 4 }, // imp (island) — hard only (trim easy to 18)
     { id: 3002, x: 18, y: 9, angle: 90 }, // demon
     { id: 3002, x: 11, y: 16, angle: 0 }, // demon
     { id: 3002, x: 26, y: 16, angle: 180 }, // demon

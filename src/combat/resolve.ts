@@ -3,7 +3,7 @@
 // and death, and broadcasts the combat + frozen events (doom-design.md §3, §5).
 import type { IWorld, Entity, Monster, Player, Faction, Rng } from '../core';
 import { PLAYER_MASS, KNOCKBACK_SCALE } from '../core';
-import { ENEMIES } from '../data';
+import { ENEMIES, SKILLS } from '../data';
 import { CombatBus } from './events';
 import { isPlayer, entityPos } from './targets';
 
@@ -51,6 +51,12 @@ function applyPlayerDamage(
   // Invulnerability blocks all damage (doom-design §5).
   const invuln = player.powerups.invulnerability;
   if (invuln !== undefined && invuln !== 0) return;
+
+  // Skill scaling: ITYTD (skill 1) halves the damage the player takes; every other
+  // skill is 1.0. Mirrors DOOM P_DamageMobj's `if (gameskill == sk_baby) damage >>= 1`.
+  const factor = SKILLS[world.skill].damageTaken;
+  if (factor !== 1) amount = Math.floor(amount * factor);
+  if (amount <= 0) return;
 
   let toHealth = amount;
   const armor = player.armor;
