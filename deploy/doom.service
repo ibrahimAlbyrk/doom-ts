@@ -1,0 +1,27 @@
+# systemd unit for the DOOM-TS prod server (multiplayer-deploy.md §7.1).
+# Runs the single-process prod entry (client + Colyseus on $PORT) as a non-root user, restarts
+# on crash, and starts on boot. Install:
+#     sudo cp deploy/doom.service /etc/systemd/system/doom.service
+#     # edit User= / WorkingDirectory= if your layout differs from /opt/doom
+#     sudo systemctl daemon-reload && sudo systemctl enable --now doom
+#     journalctl -u doom -f          # expect: "[prod] DOOM client + match server on http://0.0.0.0:2567"
+#
+# Caddy (deploy/Caddyfile) sits in front on 80/443 and proxies to localhost:2567.
+[Unit]
+Description=DOOM-TS multiplayer server (client + Colyseus, one process)
+After=network.target
+
+[Service]
+Type=simple
+User=doom
+WorkingDirectory=/opt/doom
+# Runs `npx tsx server/prod.ts` (matches `npm run server`); no separate server build step.
+ExecStart=/usr/bin/npm run start:prod
+Environment=NODE_ENV=production
+Environment=PORT=2567
+Environment=HOST=0.0.0.0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+# Caddy reverse proxy for DOOM-TS multiplayer (multiplayer-deploy.md §5).
+#
+# The prod Node process (server/prod.ts) already serves BOTH the static client and the Colyseus
+# WebSocket + /matchmake routes on ONE port (default 2567). So Caddy only has to terminate TLS
+# and proxy everything to that single upstream — Colyseus's matchmaking paths and the ws upgrade
+# all ride the same proxy. This is why there is no /ws path split here (that split is for the
+# ws-library design in the research doc; this repo runs Colyseus, which owns its own routes).
+#
+# Set your host + upstream via environment (defaults shown after the colon):
+#   DOOM_HOST     — the public hostname Caddy gets a cert for. Use a free name that maps to your
+#                   IP: <dashed-ip>.sslip.io (e.g. 203.0.113.5 -> 203-0-113-5.sslip.io), a DuckDNS
+#                   name, or a real domain you own.
+#   DOOM_UPSTREAM — where the prod Node process is. localhost:2567 for a host/systemd install;
+#                   doom:2567 (the compose service name) under docker-compose (set in compose).
+# Caddy then auto-fetches + renews a Let's Encrypt cert (so wss:// works from the https:// page).
+
+# ── Variant B (recommended): hostname + automatic HTTPS ─────────────────────────────
+{$DOOM_HOST:203-0-113-5.sslip.io} {
+	encode zstd gzip
+
+	# Cross-origin isolation so SharedArrayBuffer / AudioWorklet stay enabled in prod.
+	# (server/prod.ts also sends these; Caddy re-asserts them as the public edge.)
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+	}
+
+	# One upstream: the prod Node process. Caddy transparently handles the WebSocket
+	# Upgrade, so Colyseus ws + /matchmake + static client all proxy through here.
+	reverse_proxy {$DOOM_UPSTREAM:localhost:2567}
+}
+
+# ── Variant A (quick LAN / raw-IP smoke test, plain HTTP, no certs) ─────────────────
+# Uncomment to serve over http://<host>/ on port 80 with no TLS. Only ws:// (not wss://)
+# works from this plain-HTTP page — fine for a first "does it connect" test on a LAN.
+# Comment out Variant B above when using this (or run Caddy with this file only).
+#
+# :80 {
+# 	encode zstd gzip
+# 	reverse_proxy localhost:2567
+# }
+#
+# Note: for the very simplest LAN test you don't even need Caddy — just run the prod
+# process directly and open http://<host>:2567/ (see DEPLOY.md "Quick LAN test").

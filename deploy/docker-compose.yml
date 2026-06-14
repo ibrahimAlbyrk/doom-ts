@@ -1,0 +1,50 @@
+# DOOM-TS multiplayer — two services: the game (client + Colyseus, one process) and Caddy in
+# front for automatic HTTPS. Run from the repo root:
+#     npm run extract-assets                                  # one-time: populate public/assets
+#     DOOM_HOST=203-0-113-5.sslip.io docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Set DOOM_HOST to YOUR hostname (sslip.io/DuckDNS/real domain). Caddy gets the cert for it.
+# Friends then open https://$DOOM_HOST/ .  For a no-TLS LAN test, skip Caddy and just expose the
+# doom service's port (see the commented block at the bottom).
+services:
+  doom:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      - PORT=2567
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    restart: unless-stopped
+    # No host ports published — only Caddy reaches it, over the internal network.
+    expose:
+      - "2567"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy reads these into the Caddyfile (see deploy/Caddyfile).
+      - DOOM_HOST=${DOOM_HOST:-203-0-113-5.sslip.io}
+      - DOOM_UPSTREAM=doom:2567
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # persists the issued TLS certs across restarts
+      - caddy_config:/config
+    depends_on:
+      - doom
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+# ── No-TLS LAN test (skip Caddy) ────────────────────────────────────────────────────
+# To smoke-test on a LAN without certs, comment out the `caddy` service above and add a
+# published port to `doom`:
+#     ports:
+#       - "2567:2567"
+# then open http://<host>:2567/ . Plain HTTP, so ws:// (not wss://) is used — fine for a
+# quick connectivity check, not for "real" play.
