@@ -25,6 +25,38 @@ function cellBlocks(cx: number, cy: number, level: ILevelRuntime, fromFloorZ?: n
   return false;
 }
 
+/** The floor a body actually stands on: the HIGHEST floor among the cells its
+ *  circle overlaps — DOOM stands you on the tallest floor your bounding box
+ *  touches. Used as the reference height for the auto step-up test. Taking the
+ *  max (not just the centre cell) lets a body straddling a tier seam — e.g. the
+ *  instant after dropping off the +64 blue ledge, when its radius still overlaps
+ *  the high cell behind it — keep moving off the seam instead of wedging against
+ *  that high cell as if it were a wall. Solid cells aren't floors, so skip them. */
+function standingFloorZ(x: number, y: number, r: number, level: ILevelRuntime): number {
+  const minCx = cellOf(x - r);
+  const maxCx = cellOf(x + r);
+  const minCy = cellOf(y - r);
+  const maxCy = cellOf(y + r);
+  const r2 = r * r;
+  let z = level.floorHeightAt(cellOf(x), cellOf(y)); // the centre cell always counts
+  for (let cy = minCy; cy <= maxCy; cy++) {
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      if (level.isSolid(cx, cy)) continue;
+      const boxMinX = cx * CELL_SIZE;
+      const boxMinY = cy * CELL_SIZE;
+      const nearestX = clamp(x, boxMinX, boxMinX + CELL_SIZE);
+      const nearestY = clamp(y, boxMinY, boxMinY + CELL_SIZE);
+      const dx = x - nearestX;
+      const dy = y - nearestY;
+      if (dx * dx + dy * dy < r2 - EPS) {
+        const fz = level.floorHeightAt(cx, cy);
+        if (fz > z) z = fz;
+      }
+    }
+  }
+  return z;
+}
+
 /** True if a radius-`r` circle centred at (x,y) overlaps no blocking cell. When
  *  `fromFloorZ` is given, cells higher than the auto step-up also count blocking. */
 export function positionFits(
@@ -62,7 +94,7 @@ export function positionFits(
  */
 export function slideMove(entity: Entity, dx: number, dy: number, level: ILevelRuntime): MoveResult {
   const r = entity.radius;
-  const fromFloorZ = level.floorHeightAt(cellOf(entity.x), cellOf(entity.y));
+  const fromFloorZ = standingFloorZ(entity.x, entity.y, r, level);
   const startX = entity.x;
   const startY = entity.y;
 
