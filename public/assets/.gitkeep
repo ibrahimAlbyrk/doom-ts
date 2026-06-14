@@ -1,0 +1,2 @@
+# Asset output root. Populated by tools/extract-wad (gitignored).
+# This .gitkeep preserves the empty directory in the repo.

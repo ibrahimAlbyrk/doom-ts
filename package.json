@@ -1,0 +1,18 @@
+{
+  "name": "doom-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DOOM-style Canvas 2D raycaster web game (TypeScript + Vite, Freedoom assets)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "extract-assets": "node --experimental-strip-types tools/extract-wad/extract.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0"
+  }
+}
