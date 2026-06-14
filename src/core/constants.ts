@@ -17,10 +17,19 @@ export const MAX_FRAME_TIME = 0.25; // [WA §2] clamp to avoid spiral-of-death
 export const CELL_SIZE = 64; // mu per grid cell ([LDB] power-of-two DOOM grid)
 
 // ── Render (engine.md §6, §11) ─────────────────────────────────────────────
-export const INTERNAL_WIDTH_DEFAULT = 480; // [EN §6.2] recommended internal res
-export const INTERNAL_HEIGHT_DEFAULT = 270;
+export const INTERNAL_WIDTH_DEFAULT = 960; // [EN §6.2] 2x crisp 16:9 default
+export const INTERNAL_HEIGHT_DEFAULT = 540;
+export const INTERNAL_WIDTH_MED = 480; // [EN §6.2] balanced 16:9
+export const INTERNAL_HEIGHT_MED = 270;
 export const INTERNAL_WIDTH_RETRO = 320; // [EN §6.2] selectable 4:3 fallback
 export const INTERNAL_HEIGHT_RETRO = 200;
+
+/** Selectable internal render resolutions, low → high. Default is the last (crispest). */
+export const RESOLUTION_TIERS: readonly { readonly width: number; readonly height: number }[] = [
+  { width: INTERNAL_WIDTH_RETRO, height: INTERNAL_HEIGHT_RETRO },
+  { width: INTERNAL_WIDTH_MED, height: INTERNAL_HEIGHT_MED },
+  { width: INTERNAL_WIDTH_DEFAULT, height: INTERNAL_HEIGHT_DEFAULT },
+];
 export const FOV_PLANE_RATIO = 0.66; // [EN §0] camera-plane ratio → ~66° FOV
 export const COLORMAP_LEVELS = 32; // [EN §5] DOOM NUMCOLORMAPS light bands
 export const WALL_TEX_SIZE = 64; // [EN §11] power-of-two wall texture

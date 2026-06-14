@@ -4,12 +4,7 @@
 // input; this controller owns intra-menu navigation and settings mutation, returning
 // a MenuCommand whenever the player picks something that requires a state change.
 import type { RenderConfig, Audio, Bindings, Action, Input, SkillId } from '../core';
-import {
-  INTERNAL_WIDTH_DEFAULT,
-  INTERNAL_HEIGHT_DEFAULT,
-  INTERNAL_WIDTH_RETRO,
-  INTERNAL_HEIGHT_RETRO,
-} from '../core';
+import { RESOLUTION_TIERS } from '../core';
 import { SKILLS } from '../data';
 import { EPISODE1 } from '../levels';
 import { TextureCache, drawText, FONT_LINE_HEIGHT, HUD_FONT } from './gfx';
@@ -336,29 +331,29 @@ export class Menus {
   }
 
   private resolutionItem(): MenuItem {
-    const hi = this.ctx.config.internalWidth >= INTERNAL_WIDTH_DEFAULT;
-    const toggle = (): void => this.toggleResolution();
+    const cfg = this.ctx.config;
     return {
       label: 'RESOLUTION',
-      value: hi ? `${INTERNAL_WIDTH_DEFAULT}X${INTERNAL_HEIGHT_DEFAULT}` : `${INTERNAL_WIDTH_RETRO}X${INTERNAL_HEIGHT_RETRO}`,
-      onLeft: toggle,
-      onRight: toggle,
+      value: `${cfg.internalWidth}X${cfg.internalHeight}`,
+      onLeft: () => this.cycleResolution(-1),
+      onRight: () => this.cycleResolution(1),
       onSelect: () => {
-        toggle();
+        this.cycleResolution(1);
         return null;
       },
     };
   }
 
-  private toggleResolution(): void {
+  /** Step to the previous/next resolution tier (wraps), then notify integration. */
+  private cycleResolution(dir: number): void {
     const cfg = this.ctx.config;
-    if (cfg.internalWidth >= INTERNAL_WIDTH_DEFAULT) {
-      cfg.internalWidth = INTERNAL_WIDTH_RETRO;
-      cfg.internalHeight = INTERNAL_HEIGHT_RETRO;
-    } else {
-      cfg.internalWidth = INTERNAL_WIDTH_DEFAULT;
-      cfg.internalHeight = INTERNAL_HEIGHT_DEFAULT;
-    }
+    const n = RESOLUTION_TIERS.length;
+    const cur = RESOLUTION_TIERS.findIndex(
+      (t) => t.width === cfg.internalWidth && t.height === cfg.internalHeight,
+    );
+    const next = RESOLUTION_TIERS[(((cur < 0 ? 0 : cur) + dir) % n + n) % n]!;
+    cfg.internalWidth = next.width;
+    cfg.internalHeight = next.height;
     this.ctx.onResolutionChange?.();
   }
 
