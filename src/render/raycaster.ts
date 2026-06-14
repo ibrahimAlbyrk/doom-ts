@@ -1,21 +1,36 @@
-// Wall + flat casting — engine.md §1–3, §6.5, §7. DDA grid raycaster with
-// perpendicular (fisheye-free) distance, perspective-correct vertical texture mapping,
-// generalized variable-height wall projection (§7.1), two-pass floor/ceiling with
-// independent posZ (§7.2), and per-pixel sky.
+// Unified per-column world cast — engine.md §1–3, §6.5, §7. One DDA walk per screen
+// column draws each cell's floor and ceiling flats at THAT cell's own height (§7.2
+// variable heights) with a vertical clip frontier, then the wall slice where the ray
+// stops. Because floors/ceilings and walls share the same horizon (H/2) and eye height
+// (eyeZ), every wall bottom meets the floor that leads up to it — no gap when the eye
+// sits on a raised or sunken tier. Partially-open doors don't stop the walk: the panel
+// hangs from the top and the cast continues THROUGH the opening so the room behind
+// renders progressively (engine.md §6.4) instead of leaving a void.
 import { CELL_SIZE } from '../core';
 import type { Frame } from './frame';
 import { lightLevel, shade, SIDE_SHADE } from './lighting';
 
 const MAX_DDA_STEPS = 256; // guard against an unbounded ray in an unsealed map
 
+/** A door cell is see-through (don't stop the cast) only while it is mid-open. */
+function isOpeningDoor(open: number, solid: boolean): boolean {
+  return solid && open > 0 && open < 1;
+}
+
 /**
- * Cast one column per screen x: DDA → perpWallDist → variable-height textured wall
- * slice → zBuffer[x]. Also overwrites the ceiling band with sky where the wall cell's
- * ceiling is sky. Walls run after the flat cast, so they paint over it (engine.md §9).
+ * Cast one column per screen x. Walk the grid near→far: paint the current cell's floor
+ * (lower half) and ceiling (upper half) out to its far edge, advancing per-side clip
+ * frontiers so nearer surfaces occlude farther ones; stop at the first view-blocking
+ * cell and paint its wall slice into the remaining band. Doors mid-open paint their
+ * hanging panel but keep walking so the geometry behind shows through the gap.
  */
-export function castWalls(f: Frame): void {
+export function castWorld(f: Frame): void {
   const { back, zBuffer, cam, level, W, H, brightness, levels, extralight, eyeZ } = f;
   const half = H / 2;
+  const sky = f.skyTex;
+  const skyW = sky.width;
+  const skyH = sky.height;
+  const skyPix = sky.pixels;
 
   for (let x = 0; x < W; x++) {
     const cameraX = (2 * x) / W - 1;
@@ -34,200 +49,174 @@ export function castWalls(f: Frame): void {
     if (rayDirY < 0) { stepY = -1; sideDistY = (cam.posY - mapY) * deltaDistY; }
     else { stepY = 1; sideDistY = (mapY + 1 - cam.posY) * deltaDistY; }
 
-    let side = 0;
-    let hit = false;
+    const skyX = f.skyColumn[x]!;
+
+    // Vertical clip frontiers: floor fills upward from the bottom, ceiling downward from
+    // the top. Rows >= floorClip and rows < ceilClip are already painted this column.
+    let floorClip = H;
+    let ceilClip = 0;
+    zBuffer[x] = Infinity; // open void until a wall stops the column
+
     let steps = 0;
-    while (steps++ < MAX_DDA_STEPS) {
-      if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; }
-      else { sideDistY += deltaDistY; mapY += stepY; side = 1; }
-      if (level.isSolid(mapX, mapY)) { hit = true; break; }
+    while (steps++ < MAX_DDA_STEPS && ceilClip < floorClip) {
+      // Distance to the far edge of the CURRENT cell (mapX,mapY), and the next cell.
+      let side: number, nextX = mapX, nextY = mapY;
+      let dist: number;
+      if (sideDistX < sideDistY) { dist = sideDistX; sideDistX += deltaDistX; nextX = mapX + stepX; side = 0; }
+      else { dist = sideDistY; sideDistY += deltaDistY; nextY = mapY + stepY; side = 1; }
+      if (dist < 1e-4) dist = 1e-4;
+
+      // ── Floor of the current cell, out to its far edge (engine.md §3, §7.2) ──────
+      const fh = level.floorHeightAt(mapX, mapY) / CELL_SIZE;
+      const eyeAboveFloor = eyeZ - fh;
+      if (eyeAboveFloor > 0) {
+        const yEdge = half + (eyeAboveFloor * H) / dist;
+        let yTopI = yEdge | 0;
+        if (yTopI <= half) yTopI = half + 1; // floor stays strictly below the horizon
+        if (yTopI < floorClip) {
+          const ftex = f.resolve(level.floorTextureAt(mapX, mapY));
+          const tw = ftex.width;
+          const th = ftex.height;
+          const tpx = ftex.pixels;
+          const sectorLight = level.lightAt(mapX, mapY);
+          const posZ = eyeAboveFloor * H;
+          for (let y = floorClip - 1; y >= yTopI; y--) {
+            const rowDistance = posZ / (y - half);
+            const wx = cam.posX + rowDistance * rayDirX;
+            const wy = cam.posY + rowDistance * rayDirY;
+            const tx = (((wx - (wx | 0)) * tw) & (tw - 1));
+            const ty = (((wy - (wy | 0)) * th) & (th - 1));
+            const lvl = lightLevel(rowDistance, sectorLight, extralight, levels);
+            back[y * W + x] = shade(tpx[ty * tw + tx]!, brightness[lvl]!);
+          }
+          floorClip = yTopI;
+        }
+      }
+
+      // ── Ceiling of the current cell, out to its far edge (sky-aware) ────────────
+      const ch = level.ceilHeightAt(mapX, mapY) / CELL_SIZE;
+      const ceilAboveEye = ch - eyeZ;
+      if (ceilAboveEye > 0) {
+        let yEdge = half - (ceilAboveEye * H) / dist;
+        let yBot = yEdge > half ? half : yEdge; // never cross below the horizon
+        let yBotI = yBot | 0;
+        if (yBotI > ceilClip) {
+          const key = level.ceilTextureAt(mapX, mapY);
+          if (key === null) {
+            for (let y = ceilClip; y < yBotI; y++) {
+              let syi = ((y * skyH) / half) | 0;
+              if (syi >= skyH) syi = skyH - 1;
+              back[y * W + x] = skyPix[syi * skyW + skyX]!;
+            }
+          } else {
+            const ctex = f.resolve(key);
+            const tw = ctex.width;
+            const th = ctex.height;
+            const tpx = ctex.pixels;
+            const sectorLight = level.lightAt(mapX, mapY);
+            const posZ = ceilAboveEye * H;
+            for (let y = ceilClip; y < yBotI; y++) {
+              const rowDistance = posZ / (half - y);
+              const wx = cam.posX + rowDistance * rayDirX;
+              const wy = cam.posY + rowDistance * rayDirY;
+              const tx = (((wx - (wx | 0)) * tw) & (tw - 1));
+              const ty = (((wy - (wy | 0)) * th) & (th - 1));
+              const lvl = lightLevel(rowDistance, sectorLight, extralight, levels);
+              back[y * W + x] = shade(tpx[ty * tw + tx]!, brightness[lvl]!);
+            }
+          }
+          ceilClip = yBotI;
+        }
+      }
+
+      // ── The boundary cell: wall, closed door, or a door to cast through ──────────
+      const open = level.doorOpenAt(nextX, nextY);
+      const solid = level.isSolid(nextX, nextY);
+      if (solid && !isOpeningDoor(open, solid)) {
+        paintWallSlice(f, x, nextX, nextY, dist, side, eyeZ, half, ceilClip, floorClip, 1);
+        zBuffer[x] = dist;
+        break;
+      }
+      if (isOpeningDoor(open, solid)) {
+        // Hang the panel from the top of the opening; keep the gap below it for the
+        // geometry behind the door. visFrac shrinks to 0 as the door fully opens.
+        const drawBot = paintWallSlice(f, x, nextX, nextY, dist, side, eyeZ, half, ceilClip, floorClip, 1 - open);
+        if (drawBot > ceilClip) ceilClip = drawBot;
+      }
+
+      mapX = nextX;
+      mapY = nextY;
     }
-
-    if (!hit) {
-      zBuffer[x] = Infinity; // open void: leave the cast floor/ceiling/sky in place
-      continue;
-    }
-
-    const perpWallDist =
-      side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
-    const dist = perpWallDist > 1e-4 ? perpWallDist : 1e-4;
-    zBuffer[x] = dist;
-
-    // Wall vertical extent from this cell's floor/ceiling tiers (cell units).
-    const fz = level.floorHeightAt(mapX, mapY) / CELL_SIZE;
-    const cz = level.ceilHeightAt(mapX, mapY) / CELL_SIZE;
-    const invD = H / dist;
-    const wallTop = half + (eyeZ - cz) * invD;
-    const wallBot = half + (eyeZ - fz) * invD;
-
-    // Door panel (engine.md §6.4, simplified): a partially-open door hangs from the
-    // top; openAmt 1 = non-door/fully-open → full slice.
-    const openAmt = level.doorOpenAt(mapX, mapY);
-    const visFrac = openAmt < 1 ? 1 - openAmt : 1;
-    const drawBot = wallTop + visFrac * (wallBot - wallTop);
-
-    const tex = f.resolve(level.wallTextureAt(mapX, mapY) ?? '');
-    const TEX = tex.width;
-    const texPixels = tex.pixels;
-
-    // Horizontal texture coordinate of the hit (engine.md §2).
-    let wallX = side === 0 ? cam.posY + dist * rayDirY : cam.posX + dist * rayDirX;
-    wallX -= Math.floor(wallX);
-    let texX = (wallX * TEX) | 0;
-    if (side === 0 && rayDirX > 0) texX = TEX - texX - 1;
-    if (side === 1 && rayDirY < 0) texX = TEX - texX - 1;
-    if (texX < 0) texX = 0;
-    else if (texX >= TEX) texX = TEX - 1;
-    const texColBase = texX; // column index; row added below
-
-    // Vertical texel step: tile one texture per 1.0 cell of wall height.
-    const fullH = wallBot - wallTop;
-    const texSpan = (cz - fz) * tex.height;
-    const step = fullH > 0 ? texSpan / fullH : 0;
-
-    const yTop = wallTop < 0 ? 0 : wallTop | 0;
-    const yBot = drawBot >= H ? H - 1 : drawBot | 0;
-    let texPos = (yTop - wallTop) * step;
-
-    const sectorLight = level.lightAt(mapX, mapY);
-    const distLvl = lightLevel(dist, sectorLight, extralight, levels);
-    let f0 = brightness[distLvl]!;
-    if (side === 1) f0 *= SIDE_SHADE;
-    const texH = tex.height;
-
-    for (let y = yTop; y <= yBot; y++) {
-      let ty = texPos | 0;
-      ty %= texH;
-      if (ty < 0) ty += texH;
-      texPos += step;
-      back[y * W + x] = shade(texPixels[ty * TEX + texColBase]!, f0);
-    }
-
-    // Sky fills the ceiling band when the wall cell's ceiling is sky.
-    if (level.ceilTextureAt(mapX, mapY) === null) {
-      fillSkyColumn(f, x, yTop);
-    }
-  }
-}
-
-/** Write the sky into rows [0, yEnd) of column x (engine.md §6.5; no lighting). */
-function fillSkyColumn(f: Frame, x: number, yEnd: number): void {
-  const { back, W, H, skyTex, skyColumn } = f;
-  const sky = skyTex.pixels;
-  const skyW = skyTex.width;
-  const skyH = skyTex.height;
-  const sx = skyColumn[x]!;
-  const half = H / 2;
-  const end = yEnd > half ? (half | 0) : yEnd;
-  for (let y = 0; y < end; y++) {
-    let syi = ((y * skyH) / half) | 0;
-    if (syi >= skyH) syi = skyH - 1;
-    back[y * W + x] = sky[syi * skyW + sx]!;
   }
 }
 
 /**
- * Per-row floor + ceiling flats (engine.md §3). Two passes with independent posZ
- * (§7.2): floor keyed to the player's floor tier, ceiling to the player's ceiling tier.
- * Per-pixel texture + light come from the actual cell; sky is drawn where a ceiling
- * cell is sky-flagged.
+ * Paint a vertical wall (or door-panel) slice for the cell at (cx,cy) hit at `dist`,
+ * clipped to the current [ceilTop, floorBot) band. `visFrac` is the visible top
+ * fraction of the slice (1 for a solid wall; 1-openAmount for a rising door panel).
+ * Returns the integer screen row of the slice bottom (drawBot) — the panel's lower
+ * edge, used by the caller to advance the ceiling clip for the opening below it.
  */
-export function castFloorCeiling(f: Frame): void {
+function paintWallSlice(
+  f: Frame,
+  x: number,
+  cx: number,
+  cy: number,
+  dist: number,
+  side: number,
+  eyeZ: number,
+  half: number,
+  ceilTop: number,
+  floorBot: number,
+  visFrac: number,
+): number {
   const { back, cam, level, W, H, brightness, levels, extralight } = f;
-  const halfF = Math.floor(H / 2);
+  const fz = level.floorHeightAt(cx, cy) / CELL_SIZE;
+  const cz = level.ceilHeightAt(cx, cy) / CELL_SIZE;
+  const invD = H / dist;
+  const wallTop = half + (eyeZ - cz) * invD;
+  const wallBot = half + (eyeZ - fz) * invD;
+  const drawBot = wallTop + visFrac * (wallBot - wallTop);
 
-  const rayDirX0 = cam.dirX - cam.planeX;
-  const rayDirY0 = cam.dirY - cam.planeY;
-  const rayDirX1 = cam.dirX + cam.planeX;
-  const rayDirY1 = cam.dirY + cam.planeY;
-  const dRayX = (rayDirX1 - rayDirX0) / W;
-  const dRayY = (rayDirY1 - rayDirY0) / W;
+  const tex = f.resolve(level.wallTextureAt(cx, cy) ?? '');
+  const TEX = tex.width;
+  const texH = tex.height;
+  const texPixels = tex.pixels;
 
-  // ── Floor pass (lower half) ──────────────────────────────────────────────
-  for (let y = halfF + 1; y < H; y++) {
-    const p = y - H / 2;
-    const rowDistance = f.posZFloor / p;
-    const stepX = rowDistance * dRayX;
-    const stepY = rowDistance * dRayY;
-    let floorX = cam.posX + rowDistance * rayDirX0;
-    let floorY = cam.posY + rowDistance * rayDirY0;
-    const rowBase = y * W;
+  const cameraX = (2 * x) / W - 1;
+  const rayDirX = cam.dirX + cam.planeX * cameraX;
+  const rayDirY = cam.dirY + cam.planeY * cameraX;
+  let wallX = side === 0 ? cam.posY + dist * rayDirY : cam.posX + dist * rayDirX;
+  wallX -= Math.floor(wallX);
+  let texX = (wallX * TEX) | 0;
+  if (side === 0 && rayDirX > 0) texX = TEX - texX - 1;
+  if (side === 1 && rayDirY < 0) texX = TEX - texX - 1;
+  if (texX < 0) texX = 0;
+  else if (texX >= TEX) texX = TEX - 1;
 
-    let lastCX = -2147483648;
-    let lastCY = -2147483648;
-    let tex = f.resolve('');
-    let texPixels = tex.pixels;
-    let fLight = 1;
+  const fullH = wallBot - wallTop;
+  const texSpan = (cz - fz) * texH;
+  const step = fullH > 0 ? texSpan / fullH : 0;
 
-    for (let x = 0; x < W; x++) {
-      const cellX = floorX | 0;
-      const cellY = floorY | 0;
-      if (cellX !== lastCX || cellY !== lastCY) {
-        lastCX = cellX;
-        lastCY = cellY;
-        tex = f.resolve(level.floorTextureAt(cellX, cellY));
-        texPixels = tex.pixels;
-        const lvl = lightLevel(rowDistance, level.lightAt(cellX, cellY), extralight, levels);
-        fLight = brightness[lvl]!;
-      }
-      const tw = tex.width;
-      const th = tex.height;
-      const tx = ((floorX - cellX) * tw) & (tw - 1);
-      const ty = ((floorY - cellY) * th) & (th - 1);
-      floorX += stepX;
-      floorY += stepY;
-      back[rowBase + x] = shade(texPixels[ty * tw + tx]!, fLight);
-    }
+  // Fill the still-open band so nearer surfaces keep their pixels and no sliver is left
+  // black: a solid wall covers it all (texPos keeps the texture anchored to wallTop); a
+  // door panel only hangs from the top down to drawBot, leaving the opening below it.
+  let yTop = ceilTop < 0 ? 0 : ceilTop;
+  let yBot = visFrac >= 1 || drawBot >= floorBot ? floorBot - 1 : drawBot | 0;
+  if (yBot > H - 1) yBot = H - 1;
+
+  const sectorLight = level.lightAt(cx, cy);
+  const distLvl = lightLevel(dist, sectorLight, extralight, levels);
+  let f0 = brightness[distLvl]!;
+  if (side === 1) f0 *= SIDE_SHADE;
+
+  let texPos = (yTop - wallTop) * step;
+  for (let y = yTop; y <= yBot; y++) {
+    let ty = texPos | 0;
+    ty %= texH;
+    if (ty < 0) ty += texH;
+    texPos += step;
+    back[y * W + x] = shade(texPixels[ty * TEX + texX]!, f0);
   }
-
-  // ── Ceiling pass (upper half) ────────────────────────────────────────────
-  for (let y = 0; y < halfF; y++) {
-    const p = H / 2 - y;
-    const rowDistance = f.posZCeil / p;
-    const stepX = rowDistance * dRayX;
-    const stepY = rowDistance * dRayY;
-    let ceilX = cam.posX + rowDistance * rayDirX0;
-    let ceilY = cam.posY + rowDistance * rayDirY0;
-    const rowBase = y * W;
-
-    let lastCX = -2147483648;
-    let lastCY = -2147483648;
-    let isSky = false;
-    let tex = f.resolve('');
-    let texPixels = tex.pixels;
-    let fLight = 1;
-
-    for (let x = 0; x < W; x++) {
-      const cellX = ceilX | 0;
-      const cellY = ceilY | 0;
-      if (cellX !== lastCX || cellY !== lastCY) {
-        lastCX = cellX;
-        lastCY = cellY;
-        const key = level.ceilTextureAt(cellX, cellY);
-        isSky = key === null;
-        if (key !== null) {
-          tex = f.resolve(key);
-          texPixels = tex.pixels;
-          const lvl = lightLevel(rowDistance, level.lightAt(cellX, cellY), extralight, levels);
-          fLight = brightness[lvl]!;
-        }
-      }
-      if (isSky) {
-        const sky = f.skyTex;
-        let syi = ((y * sky.height) / halfF) | 0;
-        if (syi >= sky.height) syi = sky.height - 1;
-        back[rowBase + x] = sky.pixels[syi * sky.width + f.skyColumn[x]!]!;
-        ceilX += stepX;
-        ceilY += stepY;
-        continue;
-      }
-      const tw = tex.width;
-      const th = tex.height;
-      const tx = ((ceilX - cellX) * tw) & (tw - 1);
-      const ty = ((ceilY - cellY) * th) & (th - 1);
-      ceilX += stepX;
-      ceilY += stepY;
-      back[rowBase + x] = shade(texPixels[ty * tw + tx]!, fLight);
-    }
-  }
+  return (drawBot | 0) < ceilTop ? ceilTop : drawBot | 0;
 }

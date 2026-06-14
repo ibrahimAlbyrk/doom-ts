@@ -16,7 +16,7 @@ import { buildColormaps } from './colormap';
 import { buildBrightness } from './lighting';
 import { makeCheckerTexture, makeSkyFallback } from './textures';
 import type { Frame } from './frame';
-import { castWalls, castFloorCeiling } from './raycaster';
+import { castWorld } from './raycaster';
 import { drawSprites, drawWeapon, drawViewFlash, cameraCellLight } from './sprites';
 import { compositeTint } from './fx';
 
@@ -106,17 +106,15 @@ export class Canvas2DRenderer implements Renderer {
     const { camera: cam, level } = scene;
 
     // Height model in cell units (engine.md §7): eye above the player's floor tier.
+    // The per-column cast (castWorld) derives every floor/ceiling/wall row from eyeZ +
+    // each cell's own height, so floors and walls always share one horizon (H/2).
     const pcx = Math.floor(cam.posX);
     const pcy = Math.floor(cam.posY);
     const pf = level.floorHeightAt(pcx, pcy) / CELL_SIZE;
-    const pc = level.ceilHeightAt(pcx, pcy) / CELL_SIZE;
     // Bobbed eye height (engine.md §7, DOOM P_CalcHeight): scene.viewZ carries the
     // walk-bobbed eye-above-floor; absent it, fall back to the static VIEW_HEIGHT.
     const eyeAboveFloor = (scene.viewZ ?? VIEW_HEIGHT) / CELL_SIZE;
     const eyeZ = pf + eyeAboveFloor;
-    const posZFloor = eyeAboveFloor * H;
-    const ceilAboveEye = Math.max(pc - eyeZ, 0.001);
-    const posZCeil = ceilAboveEye * H;
 
     const skyTex = this.resolveSky(level.data.sky);
     this.buildSkyColumns(cam, W, skyTex.width);
@@ -134,16 +132,13 @@ export class Canvas2DRenderer implements Renderer {
       extralight: scene.extralight,
       eyeZ,
       eyeAboveFloor,
-      posZFloor,
-      posZCeil,
       skyTex,
       skyColumn: this.skyColumn,
     };
 
-    // engine.md §9: flats → walls (+zBuffer) → sprites (z-tested) → weapon (+flash) →
-    // full-screen tint → blit (doom-design §5 for the bob/flash/tint polish).
-    castFloorCeiling(frame);
-    castWalls(frame);
+    // engine.md §9: world (floors+ceilings+walls, +zBuffer) → sprites (z-tested) →
+    // weapon (+flash) → full-screen tint → blit (doom-design §5 for bob/flash/tint).
+    castWorld(frame);
     drawSprites(frame, scene.sprites, this.spriteOrder);
     if (scene.viewWeapon) {
       // Anchor the gun to the bottom of the play view (just above the opaque status bar),
