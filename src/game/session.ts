@@ -209,7 +209,9 @@ export class GameSession {
       strafe: axis('strafeRight', 'strafeLeft'),
       turn: axis('turnRight', 'turnLeft'),
       run: input.isDown('run'),
-      fire: input.isDown('fire'),
+      // Held OR pressed this tick: a tap too fast to be sampled as held still fires
+      // once (the trigger releases next tick → stopFire), so quick taps never drop.
+      fire: input.isDown('fire') || input.wasPressed('fire'),
       use: input.wasPressed('use'),
       weaponSlot,
       weaponCycle: (input.wasPressed('nextWeapon') ? 1 : 0) - (input.wasPressed('prevWeapon') ? 1 : 0),

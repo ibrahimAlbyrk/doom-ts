@@ -114,12 +114,16 @@ export class Game {
     if (dt > MAX_FRAME_TIME) dt = MAX_FRAME_TIME;
     this.accumulator += dt;
 
-    this.context.input.beginTick();
+    // Input edges are latched per fixed tick, never per render frame: each tick gets
+    // its own begin/flush window so a press is consumed by exactly one tick. A
+    // tickless frame keeps edges pending (no drop); a multi-tick frame consumes each
+    // edge once (no replay / double-fire). web-arch.md §5 (begin/flush are per-tick).
     while (this.accumulator >= FIXED_STEP) {
+      this.context.input.beginTick();
       this.states[this.currentKey].update(FIXED_STEP);
+      this.context.input.flush();
       this.accumulator -= FIXED_STEP;
     }
-    this.context.input.flush();
 
     const alpha = this.accumulator / FIXED_STEP;
     this.states[this.currentKey].render(this.ctx2d, alpha);

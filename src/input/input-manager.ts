@@ -39,6 +39,7 @@ export class InputManager implements Input {
     canvas.addEventListener('click', this.requestLock);
     document.addEventListener('pointerlockchange', this.onLockChange);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('blur', this.onBlur);
   }
 
   get mouseDX(): number {
@@ -114,13 +115,25 @@ export class InputManager implements Input {
 
   private onLockChange = (): void => {
     this._locked = document.pointerLockElement === this.canvas;
+    // Exiting pointer lock (Escape) means we may stop seeing keyups → drop held state
+    // so movement/fire keys never stick when control returns to the menu.
+    if (!this._locked) this.clearAll();
   };
 
   private onVisibility = (): void => {
-    if (document.hidden) {
-      this.held.clear(); // avoid stuck keys on tab-out
-      this.pressed.clear();
-      this.released.clear();
-    }
+    if (document.hidden) this.clearAll(); // tab-out: keyups go elsewhere
   };
+
+  private onBlur = (): void => {
+    this.clearAll(); // window lost focus (alt-tab / other app): avoid stuck keys
+  };
+
+  /** Drop all held/edge state + mouse deltas — recovery from any focus loss. */
+  private clearAll(): void {
+    this.held.clear();
+    this.pressed.clear();
+    this.released.clear();
+    this._mouseDX = 0;
+    this._mouseDY = 0;
+  }
 }

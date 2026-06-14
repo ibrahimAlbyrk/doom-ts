@@ -6,7 +6,7 @@ import type { GameStateId, IGameState, GameContext } from '../core';
 import { FIXED_STEP } from '../core';
 import { AssetStore, AssetLoader } from '../assets';
 import { drawTitle, drawGameOver, drawCredits, readMenuInput } from '../ui';
-import type { GameSession, TicCommand } from './session';
+import type { GameSession } from './session';
 
 function fill(ctx: CanvasRenderingContext2D, w: number, h: number, color: string): void {
   ctx.fillStyle = color;
@@ -159,33 +159,25 @@ class MenuState extends BaseState {
 
 class PlayingState extends BaseState {
   readonly id = 'playing' as const;
-  private cmd: TicCommand | null = null;
-
-  override onEnter(ctx: GameContext): void {
-    super.onEnter(ctx);
-    this.cmd = null;
-  }
 
   override update(): void {
-    if (this.cmd === null) this.cmd = this.session.readCommand();
-    if (this.cmd.pause) {
-      this.cmd = null;
+    // Read input per tick: continuous actions (movement/fire-hold) sample live held
+    // state, discrete edges (use/weapon/automap) are consumed by exactly this tick.
+    const cmd = this.session.readCommand();
+    if (cmd.pause) {
       this.ctx.transition('paused');
       return;
     }
-    const result = this.session.tic(this.cmd);
+    const result = this.session.tic(cmd);
     if (result === 'dead') {
-      this.cmd = null;
       this.ctx.transition('gameover');
     } else if (result === 'exit') {
-      this.cmd = null;
       this.ctx.transition('intermission');
     }
   }
 
   render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
     this.session.renderWorld(ctx2d, alpha);
-    this.cmd = null; // frame boundary: rebuild the command next frame
   }
 }
 
