@@ -15,14 +15,16 @@ import type {
   Renderer,
 } from '../core';
 import {
-  DEFAULT_BINDINGS,
   EventBus,
   INTERNAL_WIDTH_DEFAULT,
   INTERNAL_HEIGHT_DEFAULT,
   FOV_PLANE_RATIO,
   COLORMAP_LEVELS,
 } from '../core';
+import type { MapData } from '../core';
 import { AssetStore, AssetLoader } from '../assets';
+import { loadBindings, saveBindings } from '../input';
+import { EPISODE1, mapDataFor } from '../levels';
 import {
   TextureCache,
   HudController,
@@ -31,6 +33,7 @@ import {
   drawTitle,
   drawGameOver,
   drawCredits,
+  drawAutomap,
   type MenuInput,
   type LevelTally,
 } from './index';
@@ -99,7 +102,7 @@ const SAMPLE_TALLY: LevelTally = {
   parSeconds: 30,
 };
 
-type Screen = 'hud' | 'title' | 'menu' | 'pause' | 'intermission' | 'gameover' | 'credits';
+type Screen = 'hud' | 'title' | 'menu' | 'pause' | 'intermission' | 'gameover' | 'credits' | 'automap';
 
 async function main(): Promise<void> {
   const canvas = document.getElementById('screen');
@@ -146,7 +149,8 @@ async function main(): Promise<void> {
 
   const hud = new HudController(cache, events);
   const intermission = new Intermission(cache);
-  const bindings: Bindings = { ...DEFAULT_BINDINGS };
+  // Persisted bindings mirror real game wiring: setBinding saves; reload re-loads.
+  const bindings: Bindings = loadBindings();
   const applyResolution = (): void => {
     canvas.width = config.internalWidth;
     canvas.height = config.internalHeight;
@@ -154,9 +158,21 @@ async function main(): Promise<void> {
   const menus = new Menus(cache, {
     config,
     getBindings: () => bindings,
+    setBinding: (action, code) => {
+      bindings[action] = code;
+      saveBindings(bindings);
+    },
     audio: NOOP_AUDIO,
     onResolutionChange: applyResolution,
   });
+
+  // Compiled geometry for the automap demo; spawn the sample player at the start.
+  const automapMap: MapData | undefined = mapDataFor(EPISODE1.levels[0]!.id);
+  if (automapMap) {
+    player.x = automapMap.playerStart.x;
+    player.y = automapMap.playerStart.y;
+    player.angle = (automapMap.playerStart.angle * Math.PI) / 180;
+  }
 
   let screen: Screen = 'hud';
   intermission.start(SAMPLE_TALLY, { finishedName: 'Hangar', nextName: 'Nuclear Plant' });
@@ -177,6 +193,7 @@ async function main(): Promise<void> {
       case 'Digit5': screen = 'intermission'; intermission.start(SAMPLE_TALLY, { finishedName: 'Hangar', nextName: 'Nuclear Plant' }); break;
       case 'Digit6': screen = 'gameover'; break;
       case 'Digit7': screen = 'credits'; break;
+      case 'Digit8': screen = 'automap'; break;
       case 'KeyW': edges.up = true; break;
       case 'KeyS': edges.down = true; break;
       case 'ArrowLeft': edges.left = true; break;
@@ -212,6 +229,8 @@ async function main(): Promise<void> {
       drawGameOver(display, cache, config.internalWidth, config.internalHeight);
     } else if (screen === 'credits') {
       drawCredits(display, config.internalWidth, config.internalHeight);
+    } else if (screen === 'automap') {
+      if (automapMap) drawAutomap(display, automapMap, player, config.internalWidth, config.internalHeight);
     } else {
       // HUD over a placeholder 3D background.
       const grad = display.createLinearGradient(0, 0, 0, config.internalHeight);

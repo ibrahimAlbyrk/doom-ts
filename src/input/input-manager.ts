@@ -1,14 +1,24 @@
 // InputManager — implements the Input contract (keyboard + mouse, Pointer Lock;
 // web-arch.md §5). Held/edge sets are polled by systems through the Input interface.
 import type { Input, Action, Bindings } from '../core';
+import { loadBindings, saveBindings } from './bindings-store';
 
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab']);
+
+/** Optional construction flags. Backward-compatible: omit for today's behaviour
+ *  plus automatic persistence of rebinds. */
+export interface InputManagerOptions {
+  /** Layer persisted user overrides over the passed bindings and save on rebind.
+   *  Defaults to true. Set false to ignore localStorage entirely. */
+  persist?: boolean;
+}
 
 export class InputManager implements Input {
   private readonly held = new Set<string>();
   private readonly pressed = new Set<string>();
   private readonly released = new Set<string>();
   private readonly bindings: Bindings;
+  private readonly persist: boolean;
 
   private _mouseDX = 0;
   private _mouseDY = 0;
@@ -17,8 +27,10 @@ export class InputManager implements Input {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     bindings: Bindings,
+    options?: InputManagerOptions,
   ) {
-    this.bindings = { ...bindings };
+    this.persist = options?.persist ?? true;
+    this.bindings = this.persist ? loadBindings(bindings) : { ...bindings };
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('keyup', this.onKey);
     window.addEventListener('mousedown', this.onMouseButton);
@@ -62,6 +74,7 @@ export class InputManager implements Input {
 
   setBinding(action: Action, code: string): void {
     this.bindings[action] = code;
+    if (this.persist) saveBindings(this.bindings);
   }
   getBindings(): Bindings {
     return { ...this.bindings };

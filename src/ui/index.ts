@@ -6,7 +6,9 @@
 //   Intermission  — level tally / count-up screen
 //   drawGameOver  — death screen
 //   drawCredits   — required Freedoom BSD About/Credits screen
+//   drawAutomap   — DOOM-style top-down vector automap overlay
 export * from './gfx';
+export * from './automap';
 export * from './hud';
 export * from './title';
 export * from './menus';
