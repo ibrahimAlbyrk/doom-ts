@@ -114,10 +114,11 @@ export type TriggerKind = 'walkover' | 'switch' | 'use';
 
 export interface TriggerSpec {
   kind: TriggerKind;
-  x: number; // trigger cell
+  x: number; // primary trigger cell (sfx origin; the single cell for switch/use)
   y: number;
   once: boolean; // W1/S1 (once) vs WR/SR (repeatable)
   tag?: number; // links a trigger to its target (door/lift/teleport dest)
+  cells?: Array<{ x: number; y: number }>; // walkover footprint: every cell that trips it (defaults to [x,y])
 }
 
 export type DoorKind = 'normal' | 'locked';

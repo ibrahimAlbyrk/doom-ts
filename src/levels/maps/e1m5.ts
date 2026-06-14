@@ -78,7 +78,9 @@ export const E1M5 = compile({
     { x: 9, y: 5, texture: 'DOORBLU', kind: 'locked', key: 'blue' }, // cathedral → exit
   ],
   lifts: [
-    { cells: [{ x: 29, y: 4 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 29, y: 5, once: false } }, // secret BFG ledge
+    // trigger covers all three open cathedral-floor sides of the lift (S/W/E), so it
+    // boards from any approach — the north side is the +64 BFG-ledge destination.
+    { cells: [{ x: 29, y: 4 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 29, y: 5, once: false, cells: [{ x: 29, y: 5 }, { x: 28, y: 4 }, { x: 30, y: 4 }] } }, // secret BFG ledge
   ],
   exits: [{ kind: 'normal', trigger: { kind: 'walkover', x: 5, y: 6 } }], // exit pad
   secrets: cells(27, 2, 30, 3),

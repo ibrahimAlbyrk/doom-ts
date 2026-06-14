@@ -229,6 +229,38 @@ function testLiftRideAndCarry(): void {
   ok(lift2.phase === 'top' && near(lift2.height, 64), 'lift rests at the top after one cycle (no re-trigger loop)');
 }
 
+// ── 3c. lift: a multi-cell trigger boards from its full approach edge ──────────
+// A 2-wide lift whose trigger lists both front cells must trip from EITHER one —
+// the bug was a single-cell trigger that left the other half a dead "wall" corner.
+function testLiftFullApproachTrigger(): void {
+  console.log('lift multi-cell trigger (full approach)');
+  const make = (cells?: Array<{ x: number; y: number }>): LevelRuntime => {
+    const data = makeMap(5, 5);
+    data.lifts = [
+      {
+        cells: [{ x: 2, y: 2 }, { x: 3, y: 2 }], // 2-wide platform
+        lowHeight: 0,
+        highHeight: 64,
+        speed: 4,
+        waitTics: 35,
+        trigger: { kind: 'walkover', x: 2, y: 3, once: false, cells }, // approach row in front
+      },
+    ];
+    return new LevelRuntime(data);
+  };
+
+  // Stand a rider on (3,3): the far half of the approach, not the primary (2,3).
+  const far = () => body(3.5 * CELL_SIZE, 3.5 * CELL_SIZE, 16);
+
+  const widened = make([{ x: 2, y: 3 }, { x: 3, y: 3 }]);
+  checkWalkoverTriggers(widened, far());
+  ok(widened.lifts[0]!.phase === 'lowering', 'widened trigger boards from the far approach cell (3,3)');
+
+  const singleCell = make(undefined); // legacy single-cell trigger at (2,3) only
+  checkWalkoverTriggers(singleCell, far());
+  ok(singleCell.lifts[0]!.phase === 'top', 'single-cell trigger leaves the far half a dead corner (control)');
+}
+
 // ── 4. teleporter relocation + facing ────────────────────────────────────────
 function testTeleporter(): void {
   console.log('teleporter');
@@ -293,6 +325,7 @@ testWallBlockAndSlide();
 testDoors();
 testLifts();
 testLiftRideAndCarry();
+testLiftFullApproachTrigger();
 testTeleporter();
 testPhysics();
 console.log(`\nAll ${passed} world assertions passed.`);

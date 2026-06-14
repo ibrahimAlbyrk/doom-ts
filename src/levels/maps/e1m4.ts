@@ -81,7 +81,9 @@ export const E1M4 = compile({
     { x: 14, y: 18, texture: 'DOORRED', kind: 'locked', key: 'red' }, // hub → exit
   ],
   lifts: [
-    { cells: [{ x: 15, y: 28 }], low: 0, high: 56, trigger: { kind: 'walkover', x: 14, y: 28, once: false } }, // up to red-key island
+    // trigger covers all three open lava-cavern sides of the lift (W/N/S), so it boards
+    // from any approach across the lava — the east side is the +56 island destination.
+    { cells: [{ x: 15, y: 28 }], low: 0, high: 56, trigger: { kind: 'walkover', x: 14, y: 28, once: false, cells: [{ x: 14, y: 28 }, { x: 15, y: 27 }, { x: 15, y: 29 }] } }, // up to red-key island
   ],
   teleporters: [
     { trigger: { kind: 'walkover', x: 37, y: 21, once: false }, destX: 35, destY: 30, destAngle: 180 }, // yellow nook → plasma ledge

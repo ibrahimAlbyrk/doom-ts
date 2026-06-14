@@ -85,7 +85,9 @@ export const E1M6 = compile({
     { x: 28, y: 33, texture: 'WOODGARG' }, // entry → red wing
   ],
   lifts: [
-    { cells: [{ x: 25, y: 26 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 25, y: 27, once: false } }, // secret invuln perch
+    // trigger covers all three open antechamber sides of the lift (S/W/E), so it boards
+    // from any approach — the north side is the +64 secret-perch destination.
+    { cells: [{ x: 25, y: 26 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 25, y: 27, once: false, cells: [{ x: 25, y: 27 }, { x: 24, y: 26 }, { x: 26, y: 26 }] } }, // secret invuln perch
   ],
   exits: [{ kind: 'normal', trigger: { kind: 'switch', x: 21, y: 3 } }], // behind the throne → VICTORY
   secrets: cells(24, 24, 26, 25),

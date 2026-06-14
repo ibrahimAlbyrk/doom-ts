@@ -50,6 +50,7 @@ export interface TrigDef {
   y: number;
   once?: boolean;
   tag?: number;
+  cells?: Array<{ x: number; y: number }>; // walkover: extra cells that also trip it (full approach edge)
 }
 
 export interface DoorDef {
@@ -157,7 +158,7 @@ class TextureTable {
 }
 
 function trigger(t: TrigDef): TriggerSpec {
-  return { kind: t.kind, x: t.x, y: t.y, once: t.once ?? true, tag: t.tag };
+  return { kind: t.kind, x: t.x, y: t.y, once: t.once ?? true, tag: t.tag, cells: t.cells };
 }
 
 /** Compile a Blueprint into a frozen-schema MapData. Throws on a ragged grid or an

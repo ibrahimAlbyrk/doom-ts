@@ -66,7 +66,9 @@ export const E1M1 = compile({
     { x: 14, y: 17, texture: 'DOORBLU', kind: 'locked', key: 'blue' }, // hangar → exit
   ],
   lifts: [
-    { cells: [{ x: 29, y: 5 }, { x: 30, y: 5 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 29, y: 6, once: false } },
+    // trigger covers the full 2-cell maintenance-wing approach (south of the lift),
+    // so boarding works walking north into either half — not just the (29,6) corner.
+    { cells: [{ x: 29, y: 5 }, { x: 30, y: 5 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 29, y: 6, once: false, cells: [{ x: 29, y: 6 }, { x: 30, y: 6 }] } },
   ],
   exits: [{ kind: 'normal', trigger: { kind: 'switch', x: 9, y: 19 } }],
   secrets: cells(1, 14, 6, 20),

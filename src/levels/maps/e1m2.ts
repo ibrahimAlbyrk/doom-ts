@@ -74,7 +74,9 @@ export const E1M2 = compile({
     { x: 29, y: 11, texture: 'DOORBLU', kind: 'locked', key: 'blue' }, // hall → exit
   ],
   lifts: [
-    { cells: [{ x: 3, y: 24 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 3, y: 23, once: false } }, // secret balcony
+    // trigger spans the pump-wing edge in front of the lift (north), so it boards from
+    // anywhere across the wing's funnel — not only dead-centre on (3,23).
+    { cells: [{ x: 3, y: 24 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 3, y: 23, once: false, cells: [{ x: 2, y: 23 }, { x: 3, y: 23 }, { x: 4, y: 23 }] } }, // secret balcony
   ],
   teleporters: [
     { trigger: { kind: 'walkover', x: 26, y: 22, once: false }, destX: 33, destY: 25, destAngle: 180 }, // hall → yellow island

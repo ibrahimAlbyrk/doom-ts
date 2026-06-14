@@ -3,7 +3,7 @@
 // floor tiers between discrete heights, and relocates entities on teleport. All
 // timing is in DOOM tics; the per-frame entrypoints convert the seconds `dt`
 // (the game's FIXED_STEP) via SECONDS_PER_TIC. Mutates the LevelRuntime state.
-import type { Entity, Player, KeyColor, TeleporterSpec, EventBus, GameEventMap } from '../core';
+import type { Entity, Player, KeyColor, TeleporterSpec, TriggerSpec, EventBus, GameEventMap } from '../core';
 import { SECONDS_PER_TIC, CELL_SIZE, degToRad } from '../core';
 import type { LevelRuntime, DoorRuntime, LiftRuntime } from './level-runtime';
 import { cellOf } from './collision';
@@ -200,18 +200,23 @@ export function checkWalkoverTriggers(level: LevelRuntime, entity: Entity, event
   const maxCy = cellOf(entity.y + r);
   const crosses = (tx: number, ty: number): boolean =>
     tx >= minCx && tx <= maxCx && ty >= minCy && ty <= maxCy;
+  // A trigger may cover its whole approach edge (trigger.cells); a single (x,y)
+  // is the common case. The footprint trips it if it overlaps ANY listed cell —
+  // so a wide lift boards from its full front, not just one corner.
+  const crossesTrigger = (t: TriggerSpec): boolean =>
+    t.cells ? t.cells.some((c) => crosses(c.x, c.y)) : crosses(t.x, t.y);
 
   // Collect every walkover trigger the footprint overlaps, then act only on the
   // ones just entered this tic (level.walkoverEntries edge-detects per entity).
   const keys: string[] = [];
   data.lifts.forEach((spec, i) => {
-    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`lift:${i}`);
+    if (spec.trigger.kind === 'walkover' && crossesTrigger(spec.trigger)) keys.push(`lift:${i}`);
   });
   data.exits.forEach((spec, i) => {
-    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`exit:${i}`);
+    if (spec.trigger.kind === 'walkover' && crossesTrigger(spec.trigger)) keys.push(`exit:${i}`);
   });
   data.teleporters.forEach((spec, i) => {
-    if (spec.trigger.kind === 'walkover' && crosses(spec.trigger.x, spec.trigger.y)) keys.push(`tp:${i}`);
+    if (spec.trigger.kind === 'walkover' && crossesTrigger(spec.trigger)) keys.push(`tp:${i}`);
   });
   const entered = level.walkoverEntries(entity.id, keys);
   if (entered.size === 0) return;
