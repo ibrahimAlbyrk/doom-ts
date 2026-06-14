@@ -6,11 +6,13 @@ import { E1M1 } from './e1m1';
 import { E1M2 } from './e1m2';
 import { E1M3 } from './e1m3';
 import { E1M4 } from './e1m4';
+import { E1M5 } from './e1m5';
+import { E1M6 } from './e1m6';
 
-/** Ordered main progression for Episode 1. */
-export const EPISODE1_MAPS: MapData[] = [E1M1, E1M2, E1M3, E1M4];
+/** Ordered main progression for Episode 1 (tech base → infestation → hell). */
+export const EPISODE1_MAPS: MapData[] = [E1M1, E1M2, E1M3, E1M4, E1M5, E1M6];
 
 /** Lookup compiled MapData by id ("E1M1"). */
 export const MAPS_BY_ID: ReadonlyMap<string, MapData> = new Map(EPISODE1_MAPS.map((m) => [m.id, m]));
 
-export { E1M1, E1M2, E1M3, E1M4 };
+export { E1M1, E1M2, E1M3, E1M4, E1M5, E1M6 };
