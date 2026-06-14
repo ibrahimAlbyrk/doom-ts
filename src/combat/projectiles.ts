@@ -73,7 +73,7 @@ function projectileHitTarget(world: IWorld, p: Projectile): Entity | null {
       best = e;
     }
   };
-  if (isAlivePlayer(world.player)) consider(world.player);
+  for (const player of world.players.values()) if (isAlivePlayer(player)) consider(player);
   for (const m of world.monsters) if (isAliveMonster(m)) consider(m);
   return best;
 }

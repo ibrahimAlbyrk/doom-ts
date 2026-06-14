@@ -2,23 +2,33 @@
 // the player (180° front cone + LOS) or by hearing noise that floods to it through
 // open cells (doom-design.md §3). Sound, unlike sight, spreads around corners — a
 // grid flood from the noise origin, blocked by solid cells (walls / closed doors).
-import type { IWorld, Monster } from '../core';
+import type { IWorld, Monster, Player } from '../core';
 import { cellOf } from '../world';
 import { isAliveMonster, isAlivePlayer } from '../combat';
 import { hasLOS, inFrontCone, wake } from './targeting';
 import { reactionTics, soundTravelCells } from './tuning';
 
-/** A_Look — true (and target set) if this monster can see the player right now.
- *  A dead/dying monster never sights: a corpse must never re-acquire a target or
- *  wake, no matter who calls this (the update loop already skips it; this guards
- *  every other caller too). */
+/** A_Look — true (and target set) if this monster can see a player right now. In
+ *  co-op it considers every player and locks onto the NEAREST one in its front cone
+ *  with clear line-of-sight. A dead/dying monster never sights: a corpse must never
+ *  re-acquire a target or wake, no matter who calls this (the update loop already
+ *  skips it; this guards every other caller too). */
 export function lookForTarget(world: IWorld, m: Monster): boolean {
   if (!isAliveMonster(m)) return false;
-  const player = world.player;
-  if (!isAlivePlayer(player)) return false;
-  if (!inFrontCone(m, player)) return false;
-  if (!hasLOS(world, m, player)) return false;
-  m.target = player.id;
+  let nearest: Player | null = null;
+  let nearestDistSq = Infinity;
+  for (const player of world.players.values()) {
+    if (!isAlivePlayer(player)) continue;
+    if (!inFrontCone(m, player)) continue;
+    if (!hasLOS(world, m, player)) continue;
+    const distSq = (player.x - m.x) ** 2 + (player.y - m.y) ** 2;
+    if (distSq < nearestDistSq) {
+      nearestDistSq = distSq;
+      nearest = player;
+    }
+  }
+  if (!nearest) return false;
+  m.target = nearest.id;
   return true;
 }
 

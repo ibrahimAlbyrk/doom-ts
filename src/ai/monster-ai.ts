@@ -155,7 +155,7 @@ export function createMonsterAI(world: IWorld, rng: Rng, combat: CombatBus): Mon
 
   return {
     update: (tics = 1) => updateMonsters(world, rng, combat, tics),
-    noise: (x, y, makerId = world.player.id) => noiseAlert(world, x, y, makerId),
+    noise: (x, y, makerId = world.localPlayerId) => noiseAlert(world, x, y, makerId),
     dispose: unsubscribe,
   };
 }

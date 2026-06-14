@@ -23,7 +23,7 @@ export function radiusDamage(
   const origin = { x, y };
 
   const victims: Entity[] = [];
-  if (isAlivePlayer(world.player) && world.player.id !== sourceId) victims.push(world.player);
+  for (const p of world.players.values()) if (isAlivePlayer(p) && p.id !== sourceId) victims.push(p);
   for (const m of world.monsters) if (isAliveMonster(m) && m.id !== sourceId) victims.push(m);
 
   for (const e of victims) {

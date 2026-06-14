@@ -39,7 +39,8 @@ export function inMeleeRange(m: Monster, target: Entity): boolean {
 /** Resolve a monster's current target id to a live entity, or null if gone. */
 export function targetEntity(world: IWorld, m: Monster): Entity | null {
   if (m.target === null) return null;
-  if (world.player.id === m.target) return isAlivePlayer(world.player) ? world.player : null;
+  const player = world.players.get(m.target);
+  if (player) return isAlivePlayer(player) ? player : null;
   const mon = world.monsters.find((x) => x.id === m.target);
   return mon && isAliveMonster(mon) ? mon : null;
 }

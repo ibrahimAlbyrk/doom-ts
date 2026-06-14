@@ -9,7 +9,7 @@
 //
 // Per-level systems are rebuilt on every startLevel and torn down first, so combat
 // subscriptions never leak between maps. Shared services live on the SimContext.
-import type { SimContext, SkillId, MapData, ILevelRuntime } from '../core';
+import type { SimContext, SkillId, MapData, ILevelRuntime, IWorld } from '../core';
 import {
   CELL_SIZE,
   FIXED_STEP,
@@ -158,11 +158,12 @@ export class GameSession {
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
 
-  /** Start a brand-new game at the episode's first level with a fresh loadout. */
+  /** Start a brand-new game at the episode's first level with a fresh loadout for
+   *  every player (each keeps its id; loadLevel repositions them at the spawn). */
   startNewGame(skill: SkillId): void {
     this.ctx.skill = skill;
     const w = this.ctx.world;
-    w.player = createPlayer(w.player.id, 0, 0, 0); // reset health/weapons/ammo
+    for (const id of [...w.players.keys()]) w.players.set(id, createPlayer(id, 0, 0, 0));
     this.ctx.episodeLevel = 0;
     this.startLevel(EPISODE1.levels[0]!.id);
   }
@@ -249,9 +250,10 @@ export class GameSession {
     ai.update(T);
     updateProjectiles(world, rng, combat, T);
 
-    // 7) world dynamics: doors/lifts (non-crushing) + walkover triggers.
-    updateDoors(level, FIXED_STEP, (cx, cy) => cellOf(p.x) === cx && cellOf(p.y) === cy, events);
-    checkWalkoverTriggers(level, p, events);
+    // 7) world dynamics: doors/lifts (non-crushing for ANY player) + per-player
+    //    walkover triggers (B7) — any player boards a lift / trips an exit/teleporter.
+    updateDoors(level, FIXED_STEP, (cx, cy) => playerInCell(world, cx, cy), events);
+    for (const player of world.players.values()) checkWalkoverTriggers(level, player, events);
 
     // 8) item pickups.
     updateItems({ world, weapons, skill: this.ctx.skill, events }, T);
@@ -330,4 +332,13 @@ export class GameSession {
     this.totalItems = items;
     this.totalSecrets = data.secretSectors.length;
   }
+}
+
+/** Any player standing in cell (cx,cy)? Drives the non-crushing door predicate so a
+ *  door reopens for whichever player is underneath it (B7). */
+function playerInCell(world: IWorld, cx: number, cy: number): boolean {
+  for (const player of world.players.values()) {
+    if (cellOf(player.x) === cx && cellOf(player.y) === cy) return true;
+  }
+  return false;
 }

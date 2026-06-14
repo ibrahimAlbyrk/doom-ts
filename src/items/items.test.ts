@@ -56,22 +56,22 @@ function testHealth(): void {
   console.log('health caps');
   const r = rig();
   r.world.player.health = 199;
-  ok(applyItem(r.ctx, item('healthBonus')) && r.world.player.health === 200, 'health bonus +1 climbs past 100 to the 200 cap');
-  ok(applyItem(r.ctx, item('healthBonus')) && r.world.player.health === 200, 'health bonus is still consumed at the 200 cap');
+  ok(applyItem(r.ctx, item('healthBonus'), r.world.player) && r.world.player.health === 200, 'health bonus +1 climbs past 100 to the 200 cap');
+  ok(applyItem(r.ctx, item('healthBonus'), r.world.player) && r.world.player.health === 200, 'health bonus is still consumed at the 200 cap');
 
   r.world.player.health = 100;
-  ok(!applyItem(r.ctx, item('medikit')) && r.world.player.health === 100, 'medikit not consumed at full health (100)');
+  ok(!applyItem(r.ctx, item('medikit'), r.world.player) && r.world.player.health === 100, 'medikit not consumed at full health (100)');
   r.world.player.health = 80;
-  ok(applyItem(r.ctx, item('medikit')) && r.world.player.health === 100, 'medikit +25 clamps to the soft cap 100');
+  ok(applyItem(r.ctx, item('medikit'), r.world.player) && r.world.player.health === 100, 'medikit +25 clamps to the soft cap 100');
   r.world.player.health = 95;
-  ok(applyItem(r.ctx, item('stimpack')) && r.world.player.health === 100, 'stimpack +10 clamps to 100');
+  ok(applyItem(r.ctx, item('stimpack'), r.world.player) && r.world.player.health === 100, 'stimpack +10 clamps to 100');
 
   r.world.player.health = 100;
-  ok(applyItem(r.ctx, item('soulsphere')) && r.world.player.health === 200, 'soulsphere +100 reaches the 200 cap');
+  ok(applyItem(r.ctx, item('soulsphere'), r.world.player) && r.world.player.health === 200, 'soulsphere +100 reaches the 200 cap');
 
   const m = rig();
   m.world.player.health = 50;
-  ok(applyItem(m.ctx, item('megasphere')), 'megasphere is collected');
+  ok(applyItem(m.ctx, item('megasphere'), m.world.player), 'megasphere is collected');
   ok(m.world.player.health === 200 && m.world.player.armor.points === 200 && m.world.player.armor.factor === ARMOR_BLUE_FACTOR, 'megasphere sets health 200 + blue armor 200');
 }
 
@@ -79,13 +79,13 @@ function testHealth(): void {
 function testArmor(): void {
   console.log('armor caps + upgrade-only rule');
   const r = rig();
-  ok(applyItem(r.ctx, item('greenArmor')) && r.world.player.armor.points === 100 && r.world.player.armor.factor === ARMOR_GREEN_FACTOR, 'green armor → 100 @ 1/3');
-  ok(applyItem(r.ctx, item('armorBonus')) && r.world.player.armor.points === 101, 'armor bonus +1 over green');
-  ok(applyItem(r.ctx, item('blueArmor')) && r.world.player.armor.points === 200 && r.world.player.armor.factor === ARMOR_BLUE_FACTOR, 'blue armor upgrades → 200 @ 1/2');
-  ok(!applyItem(r.ctx, item('greenArmor')) && r.world.player.armor.points === 200 && r.world.player.armor.factor === ARMOR_BLUE_FACTOR, 'lesser green armor over blue is not picked up (no downgrade)');
+  ok(applyItem(r.ctx, item('greenArmor'), r.world.player) && r.world.player.armor.points === 100 && r.world.player.armor.factor === ARMOR_GREEN_FACTOR, 'green armor → 100 @ 1/3');
+  ok(applyItem(r.ctx, item('armorBonus'), r.world.player) && r.world.player.armor.points === 101, 'armor bonus +1 over green');
+  ok(applyItem(r.ctx, item('blueArmor'), r.world.player) && r.world.player.armor.points === 200 && r.world.player.armor.factor === ARMOR_BLUE_FACTOR, 'blue armor upgrades → 200 @ 1/2');
+  ok(!applyItem(r.ctx, item('greenArmor'), r.world.player) && r.world.player.armor.points === 200 && r.world.player.armor.factor === ARMOR_BLUE_FACTOR, 'lesser green armor over blue is not picked up (no downgrade)');
 
   const b = rig();
-  ok(applyItem(b.ctx, item('armorBonus')) && b.world.player.armor.points === 1 && b.world.player.armor.factor === ARMOR_GREEN_FACTOR, 'armor bonus with no armor defaults to green absorption');
+  ok(applyItem(b.ctx, item('armorBonus'), b.world.player) && b.world.player.armor.points === 1 && b.world.player.armor.factor === ARMOR_GREEN_FACTOR, 'armor bonus with no armor defaults to green absorption');
 }
 
 // ── 3. ammo: skill multiplier + backpack doubling ───────────────────────────────
@@ -93,17 +93,17 @@ function testAmmo(): void {
   console.log('ammo doubling + skill multiplier');
   const r = rig();
   r.world.player.inventory.ammo.bullets = 200; // at the normal max
-  ok(applyItem(r.ctx, item('backpack')), 'backpack is collected');
+  ok(applyItem(r.ctx, item('backpack'), r.world.player), 'backpack is collected');
   ok(r.world.player.inventory.ammoMax.bullets === 400, 'backpack doubles the bullet max to 400');
   ok(r.world.player.inventory.ammo.bullets === 210, 'backpack tops up +10 bullets over the old max (200 → 210)');
-  ok(applyItem(r.ctx, item('boxBullets')) && r.world.player.inventory.ammo.bullets === 260, 'box of bullets (+50) clamps under the raised max');
+  ok(applyItem(r.ctx, item('boxBullets'), r.world.player) && r.world.player.inventory.ammo.bullets === 260, 'box of bullets (+50) clamps under the raised max');
 
   r.world.player.inventory.ammo.bullets = 400;
-  ok(!applyItem(r.ctx, item('clip')), 'a clip at the (raised) max is not picked up');
+  ok(!applyItem(r.ctx, item('clip'), r.world.player), 'a clip at the (raised) max is not picked up');
 
   const s = rig(1); // I'm Too Young To Die → ammoMultiplier 2
   s.world.player.inventory.ammo.bullets = 0;
-  ok(applyItem(s.ctx, item('clip')) && s.world.player.inventory.ammo.bullets === 20, 'skill-1 doubles a 10-round clip to 20');
+  ok(applyItem(s.ctx, item('clip'), s.world.player) && s.world.player.inventory.ammo.bullets === 20, 'skill-1 doubles a 10-round clip to 20');
 }
 
 // ── 4. weapon pickup auto-switches + grants ammo ────────────────────────────────
@@ -111,7 +111,7 @@ function testWeapon(): void {
   console.log('weapon pickup auto-switch');
   const r = rig();
   r.world.player.inventory.ammo.shells = 0;
-  ok(applyItem(r.ctx, item('pickupShotgun')), 'shotgun pickup collected');
+  ok(applyItem(r.ctx, item('pickupShotgun'), r.world.player), 'shotgun pickup collected');
   ok(r.world.player.inventory.weapons.shotgun === true, 'shotgun added to inventory');
   ok(r.world.player.pendingWeapon === 'shotgun', 'new weapon auto-switches (pendingWeapon = shotgun)');
   ok(r.world.player.inventory.ammo.shells === 8, 'shotgun pickup grants its 8 first-pickup shells');
@@ -127,7 +127,7 @@ function testPowerups(): void {
   updatePowerups(r.world.player, 5000, r.ctx.events);
   ok(r.world.player.powerups.berserk === -1, 'berserk is level-permanent (never counts down)');
 
-  ok(applyItem(r.ctx, item('invulnerability')), 'invulnerability collected');
+  ok(applyItem(r.ctx, item('invulnerability'), r.world.player), 'invulnerability collected');
   const dur = POWERUPS.invulnerability.durationTics;
   ok(r.world.player.powerups.invulnerability === dur && r.started.includes('invulnerability'), 'invuln timer armed + powerup:started emitted');
   updatePowerups(r.world.player, dur - 1, r.ctx.events);
@@ -140,8 +140,8 @@ function testPowerups(): void {
 function testKeys(): void {
   console.log('keys');
   const r = rig();
-  ok(applyItem(r.ctx, item('blueCard')) && r.world.player.inventory.keys.blue.card, 'blue keycard recorded');
-  ok(applyItem(r.ctx, item('redSkull')) && r.world.player.inventory.keys.red.skull, 'red skull key recorded');
+  ok(applyItem(r.ctx, item('blueCard'), r.world.player) && r.world.player.inventory.keys.blue.card, 'blue keycard recorded');
+  ok(applyItem(r.ctx, item('redSkull'), r.world.player) && r.world.player.inventory.keys.red.skull, 'red skull key recorded');
   ok(r.keys.includes('blue') && r.keys.includes('red'), 'key:collected emitted for each');
 }
 

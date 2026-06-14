@@ -32,7 +32,7 @@ export function applyDamage(
 ): void {
   if (amount <= 0 || !target.active) return;
   if (isPlayer(world, target)) {
-    applyPlayerDamage(world, world.player, amount, sourceId, sourceFaction, events, origin);
+    applyPlayerDamage(world, target, amount, sourceId, sourceFaction, events, origin);
   } else {
     applyMonsterDamage(world, target as Monster, amount, sourceId, sourceFaction, rng, events, origin);
   }

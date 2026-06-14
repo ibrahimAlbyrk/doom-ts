@@ -209,12 +209,23 @@ export interface ILevelRuntime {
 
 /** Entity registry (owned by src/entities). Concrete World implements this. */
 export interface IWorld {
-  player: Player;
+  /** All players in the sim, keyed by stable host-authoritative id (multiplayer-plan
+   *  B1/B3). Offline single-player is a map of size 1 (id 0). Sim code that affects
+   *  ANY player (AI targeting, combat, pickups, door/walkover triggers) iterates this. */
+  players: Map<number, Player>;
+  /** Id of THIS client's player — the local point of view the renderer/HUD/local
+   *  input read. The session owner sets it (LocalSession: 0). */
+  localPlayerId: number;
+  /** The local client's own player (= players.get(localPlayerId)). A single-viewpoint
+   *  accessor for the presenter/HUD/local-input ONLY; never use it to mean "the (one)
+   *  player" in shared sim logic — iterate `players` there. */
+  readonly player: Player;
   monsters: Monster[];
   projectiles: Projectile[];
   pickups: Pickup[];
   level: ILevelRuntime | null;
   skill: SkillId; // active skill — drives the player-damage multiplier (loadLevel sets it)
+  /** Host-authoritative id allocation (B3): only the authority calls this. */
   allocId(): number;
   removeMonster(id: number): void;
   removeProjectile(id: number): void;

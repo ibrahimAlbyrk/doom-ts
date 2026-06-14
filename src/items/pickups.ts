@@ -34,26 +34,29 @@ export interface PickupContext {
   events?: EventBus<GameEventMap>;
 }
 
-/** Per-tic items update the game loop calls: collect overlapping pickups, then
- *  advance powerup timers by the `tics` elapsed this step. */
+/** Per-tic items update the game loop calls: collect overlapping pickups per player,
+ *  then advance every player's powerup timers by the `tics` elapsed this step. */
 export function updateItems(ctx: PickupContext, tics = 1): void {
   checkPickups(ctx);
-  updatePowerups(ctx.world.player, tics, ctx.events);
+  for (const player of ctx.world.players.values()) updatePowerups(player, tics, ctx.events);
 }
 
-/** Test the player against each active pickup; collect + remove on touch. */
+/** Test every player against each active pickup; the touching player collects it,
+ *  the effect applies to THAT player, and it is removed (pickups are per-player). */
 export function checkPickups(ctx: PickupContext): void {
   const { world } = ctx;
-  const player = world.player;
-  // Back-to-front: removePickup swap-pops, so lower indices stay valid mid-loop.
-  for (let i = world.pickups.length - 1; i >= 0; i--) {
-    const pickup = world.pickups[i]!;
-    if (!pickup.active || !touches(player, pickup)) continue;
-    const def = ITEMS_BY_ID.get(pickup.thingId);
-    if (!def) continue;
-    if (applyItem(ctx, def)) {
-      ctx.events?.emit('pickup:collected', { thingId: pickup.thingId });
-      world.removePickup(pickup.id);
+  for (const player of world.players.values()) {
+    if (!player.active) continue;
+    // Back-to-front: removePickup swap-pops, so lower indices stay valid mid-loop.
+    for (let i = world.pickups.length - 1; i >= 0; i--) {
+      const pickup = world.pickups[i];
+      if (!pickup || !pickup.active || !touches(player, pickup)) continue;
+      const def = ITEMS_BY_ID.get(pickup.thingId);
+      if (!def) continue;
+      if (applyItem(ctx, def, player)) {
+        ctx.events?.emit('pickup:collected', { thingId: pickup.thingId });
+        world.removePickup(pickup.id);
+      }
     }
   }
 }
@@ -64,10 +67,12 @@ function touches(player: Player, pickup: Pickup): boolean {
   return Math.abs(player.x - pickup.x) < block && Math.abs(player.y - pickup.y) < block;
 }
 
-/** Apply one item's effect. Returns false when the item must stay in the world
- *  (full-health stimpack/medikit, armor that wouldn't upgrade, ammo already maxed). */
-export function applyItem(ctx: PickupContext, def: ItemDef): boolean {
-  const player = ctx.world.player;
+/** Apply one item's effect to `player`. Returns false when the item must stay in the
+ *  world (full-health stimpack/medikit, armor that wouldn't upgrade, ammo already
+ *  maxed). Direct effects (health/armor/keys/powerups) land on the touching player;
+ *  ammo/weapon/backpack route through the injected WeaponSystem (P1: the local
+ *  player's — per-player weapon systems land with the authoritative server, P2). */
+export function applyItem(ctx: PickupContext, def: ItemDef, player: Player): boolean {
   switch (def.kind) {
     case 'health':
       return applyHealth(player, def);
@@ -81,9 +86,9 @@ export function applyItem(ctx: PickupContext, def: ItemDef): boolean {
       ctx.weapons.giveBackpack();
       return true;
     case 'key':
-      return applyKey(ctx, def);
+      return applyKey(ctx, def, player);
     case 'powerup':
-      return applyPowerup(ctx, def);
+      return applyPowerup(ctx, def, player);
   }
 }
 
@@ -117,15 +122,15 @@ function applyWeapon(ctx: PickupContext, def: ItemDef): boolean {
   return true;
 }
 
-function applyKey(ctx: PickupContext, def: ItemDef): boolean {
+function applyKey(ctx: PickupContext, def: ItemDef, player: Player): boolean {
   if (def.keyColor === undefined || def.keyForm === undefined) return false;
-  ctx.world.player.inventory.keys[def.keyColor][def.keyForm] = true;
+  player.inventory.keys[def.keyColor][def.keyForm] = true;
   ctx.events?.emit('key:collected', { color: def.keyColor });
   return true;
 }
 
-function applyPowerup(ctx: PickupContext, def: ItemDef): boolean {
+function applyPowerup(ctx: PickupContext, def: ItemDef, player: Player): boolean {
   if (def.powerup === undefined) return false;
-  startPowerup(ctx.world.player, def.powerup, ctx.events);
+  startPowerup(player, def.powerup, ctx.events);
   return true;
 }
