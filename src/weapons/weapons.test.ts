@@ -230,6 +230,40 @@ function testViewModel(): void {
   ok(r.ws.getView().bobY > 0, 'lowering the gun raises bobY (stow travel)');
 }
 
+// ── 9. every weapon shows a fire effect while firing (flash OR bright fire frame) ─
+function testFireEffectAllWeapons(): void {
+  console.log('every weapon shows a fire effect while firing');
+  const FLASH_LUMPS: Partial<Record<WeaponId, string>> = {
+    pistol: 'PISF',
+    chaingun: 'CHGF',
+    rocketLauncher: 'MISF',
+    plasmaRifle: 'PLSF',
+    bfg9000: 'BFGF',
+  };
+  for (const id of Object.keys(WEAPONS) as WeaponId[]) {
+    const def = WEAPONS[id];
+    const r = rig(id, { bullets: 50, shells: 50, rockets: 50, cells: 300 });
+    ok(r.ws.fire(), `${id}: fire() succeeds`);
+    const v = r.ws.getView();
+
+    // While firing, the view must carry a full-bright overlay so the discharge is visible.
+    ok(v.flashSprite !== '', `${id}: firing exposes a fire-effect overlay (flashSprite set)`);
+
+    const expectedFlash = FLASH_LUMPS[id];
+    if (expectedFlash !== undefined) {
+      // Flash-bearing weapon: overlays its muzzle-flash sprite + bumps extralight.
+      ok(def.flashSprite === expectedFlash, `${id}: data declares the ${expectedFlash} muzzle flash`);
+      ok(v.flashSprite === expectedFlash, `${id}: view overlays the ${expectedFlash} muzzle flash`);
+      ok(v.extralight > 0, `${id}: muzzle flash bumps extralight (${v.extralight})`);
+    } else {
+      // Flash-less weapon: re-draws its own fire frame bright (no separate flash lump).
+      ok(def.flashSprite === '', `${id}: data declares no muzzle-flash lump`);
+      ok(v.flashSprite === def.viewSprite, `${id}: view re-draws its own ${def.viewSprite} frame bright`);
+      ok(v.flashFrame === v.frame && v.frame !== 'A', `${id}: bright overlay tracks the fire frame (${v.frame})`);
+    }
+  }
+}
+
 // ── run ────────────────────────────────────────────────────────────────────────
 testAllWeaponsFire();
 testAmmoPerShot();
@@ -239,4 +273,5 @@ testBfgTracers();
 testSwitching();
 testAutoSwitch();
 testViewModel();
+testFireEffectAllWeapons();
 console.log(`\nAll ${passed} weapon assertions passed.`);
