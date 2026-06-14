@@ -12,6 +12,7 @@ import { mapDataFor } from '../levels';
 import { GameSoundEvents, type AudioManager } from '../audio';
 import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
 import { LocalSession, type Session, type TicCommand, type TicResult } from '../session';
+import { LobbyClient, MockLobbyTransport, type MatchConfig } from '../lobby';
 import { buildRenderScene } from './scene';
 import { saveResolution } from './resolution-store';
 
@@ -32,6 +33,11 @@ export class GameClient {
   readonly hud: HudController;
   readonly intermission: Intermission;
   readonly menus: Menus;
+  /** The client lobby state machine the multiplayer menus drive. Backed by a MOCK
+   *  transport today (no network) so the whole lobby flow is navigable; P2 swaps in the
+   *  real LobbyTransport. The mock injects a fake second player so ready-up + the
+   *  all-ready START gate are demonstrable solo (docs/multiplayer-plan.md §3). */
+  readonly lobby: LobbyClient;
 
   /** The authority the client renders/steps. Offline default = a LocalSession. */
   private readonly session: Session;
@@ -55,11 +61,16 @@ export class GameClient {
     this.cache = new TextureCache(ctx.assets);
     this.hud = new HudController(this.cache, ctx.events);
     this.intermission = new Intermission(this.cache);
+    this.lobby = new LobbyClient(
+      new MockLobbyTransport({ fakeJoinDelayMs: 700, fakeReadyDelayMs: 1400 }),
+      { name: 'PLAYER 1' },
+    );
     this.menus = new Menus(this.cache, {
       config: ctx.config,
       getBindings: () => ctx.input.getBindings(),
       setBinding: (action, code) => ctx.input.setBinding(action, code),
       audio: ctx.audio,
+      lobby: this.lobby,
       onResolutionChange: () => {
         ctx.renderer.resize(ctx.config);
         saveResolution({ width: ctx.config.internalWidth, height: ctx.config.internalHeight });
@@ -86,6 +97,21 @@ export class GameClient {
   startNewGame(skill: SkillId): void {
     this.session.startNewGame(skill);
     this.onLevelLoaded();
+  }
+
+  /**
+   * TODO(P2 network worker): the lobby has reached ALL_READY and the host pressed START.
+   * This is the single handoff point: construct a RemoteSession over the real
+   * SessionTransport, seed it from `config` (skill/episode/level/mode per
+   * docs/multiplayer-plan.md §3.6), swap it in for the LocalSession, and enter the
+   * networked PLAYING sub-mode. Until then the lobby is fully navigable but the match
+   * itself is a no-op stub — single-player offline is the only path that actually plays.
+   */
+  startNetworkedMatch(config: MatchConfig): void {
+    console.warn(
+      '[MP] startNetworkedMatch: networked match start lands in P2 — handing config to a RemoteSession is not wired yet.',
+      config,
+    );
   }
 
   teardownLevel(): void {
