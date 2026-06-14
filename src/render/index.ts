@@ -5,3 +5,4 @@ export * from './lighting';
 export * from './textures';
 export * from './raycaster';
 export * from './sprites';
+export * from './fx';

@@ -17,7 +17,8 @@ import { buildBrightness } from './lighting';
 import { makeCheckerTexture, makeSkyFallback } from './textures';
 import type { Frame } from './frame';
 import { castWalls, castFloorCeiling } from './raycaster';
-import { drawSprites, drawWeapon, cameraCellLight } from './sprites';
+import { drawSprites, drawWeapon, drawViewFlash, cameraCellLight } from './sprites';
+import { compositeTint } from './fx';
 
 export class Canvas2DRenderer implements Renderer {
   private canvas: HTMLCanvasElement | null = null;
@@ -136,7 +137,8 @@ export class Canvas2DRenderer implements Renderer {
       skyColumn: this.skyColumn,
     };
 
-    // engine.md §9: flats → walls (+zBuffer) → sprites (z-tested) → weapon → blit.
+    // engine.md §9: flats → walls (+zBuffer) → sprites (z-tested) → weapon (+flash) →
+    // full-screen tint → blit (doom-design §5 for the bob/flash/tint polish).
     castFloorCeiling(frame);
     castWalls(frame);
     drawSprites(frame, scene.sprites, this.spriteOrder);
@@ -150,10 +152,15 @@ export class Canvas2DRenderer implements Renderer {
         config.colormapLevels,
         cameraCellLight(level, cam.posX, cam.posY),
         scene.extralight,
-        0,
-        0, // RenderScene carries no weapon bob offset — see reported interface gap
+        scene.bobX,
+        scene.bobY,
       );
+      if (scene.viewFlash) {
+        drawViewFlash(back, W, H, scene.viewWeapon, scene.viewFlash, scene.bobX, scene.bobY);
+      }
     }
+
+    if (scene.tint) compositeTint(back, W, H, scene.tint);
 
     ctx.putImageData(buffer, 0, 0);
   }

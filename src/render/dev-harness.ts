@@ -10,6 +10,7 @@ import type {
   ILevelRuntime,
   MapData,
   RenderConfig,
+  ScreenTint,
   SpriteInstance,
   SpriteFrame,
   Texture,
@@ -148,6 +149,26 @@ function makeWeaponFrame(): SpriteFrame {
   return { texture: { width: w, height: h, pixels: px } as Texture, originX: w / 2, originY: h, mirror: false };
 }
 
+/**
+ * A bright muzzle-flash blob whose hotspot offsets place it at the weapon's barrel tip
+ * (top-center of makeWeaponFrame). Exercises drawViewFlash's origin-difference alignment.
+ */
+function makeFlashFrame(): SpriteFrame {
+  const w = 32;
+  const h = 32;
+  const px = new Uint32Array(w * h);
+  const pack = (r: number, g: number, b: number) => (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
+  const c = (w - 1) / 2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = Math.hypot(x - c, y - c) / c;
+      if (d <= 1) px[y * w + x] = d > 0.6 ? pack(255, 180, 60) : pack(255, 250, 200);
+    }
+  }
+  // origin (16,70): with the weapon origin (40,60) the flash centers on the barrel tip.
+  return { texture: { width: w, height: h, pixels: px } as Texture, originX: 16, originY: 70, mirror: false };
+}
+
 function cameraFromAngle(posX: number, posY: number, angle: number): Camera {
   const dirX = Math.cos(angle);
   const dirY = Math.sin(angle);
@@ -185,12 +206,32 @@ function main(): void {
     { x: 3.5, y: 7.0, frame: makeFallbackSpriteFrame('BALL', 40), light: 200, fullbright: true, vMove: -20 },
   ];
   const weapon = makeWeaponFrame();
+  const flash = makeFlashFrame();
+
+  // §5 polish demo state — drive the new RenderScene fields. Keys: 1 damage-red,
+  // 2 radsuit-green, 3 invuln-invert, 4 light-amp-bright, 5 pickup-gold, 0 none; f flash.
+  const TINTS: Record<string, ScreenTint | undefined> = {
+    '0': undefined,
+    '1': { r: 255, g: 0, b: 0, a: 0.5 }, // damage red flash
+    '2': { r: 0, g: 255, b: 0, a: 0.18 }, // radiation suit
+    '3': { r: 255, g: 255, b: 255, a: 0.15, mode: 'invert' }, // invulnerability
+    '4': { r: 255, g: 255, b: 210, a: 0.5, mode: 'bright' }, // light-amp / infrared
+    '5': { r: 215, g: 186, b: 69, a: 0.3 }, // item pickup gold
+  };
+  let tint: ScreenTint | undefined = undefined;
+  let flashOn = true;
 
   let angle = Math.PI / 4;
   let px = 2.5;
   let py = 2.5;
+  let bobPhase = 0;
   const keys = new Set<string>();
-  addEventListener('keydown', (e) => keys.add(e.key.toLowerCase()));
+  addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    keys.add(k);
+    if (k in TINTS) tint = TINTS[k];
+    if (k === 'f') flashOn = !flashOn;
+  });
   addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 
   function move(dt: number): void {
@@ -215,17 +256,36 @@ function main(): void {
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
     move(dt);
+    // Continuous walk-bob so the offset is always visibly applied to the view-model.
+    bobPhase += dt * 6;
+    const bobX = Math.cos(bobPhase) * 8;
+    const bobY = Math.abs(Math.sin(bobPhase)) * 6;
     const cam = cameraFromAngle(px, py, angle);
     renderer.render(
-      { camera: cam, level, sprites, viewWeapon: weapon, extralight: 0, bobX: 0, bobY: 0 },
+      {
+        camera: cam,
+        level,
+        sprites,
+        viewWeapon: weapon,
+        viewFlash: flashOn ? flash : null,
+        extralight: 0,
+        bobX,
+        bobY,
+        tint,
+      },
       0,
     );
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  // Expose for headless screenshot / smoke checks.
-  (window as unknown as { __harness: unknown }).__harness = { renderer, level };
+  // Expose for headless screenshot / smoke checks + programmatic FX toggles.
+  (window as unknown as { __harness: unknown }).__harness = {
+    renderer,
+    level,
+    setTint: (t: ScreenTint | undefined) => { tint = t; },
+    setFlash: (on: boolean) => { flashOn = on; },
+  };
 }
 
 main();

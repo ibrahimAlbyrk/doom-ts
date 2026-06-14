@@ -37,6 +37,30 @@ export interface RenderConfig {
   colormapLevels: number; // light bands
 }
 
+/**
+ * Full-screen palette tint composited over the final frame (doom-design §5).
+ * The game derives this each frame from damage events + active powerup timers; the
+ * renderer just composites it. Omit (undefined) for no tint.
+ */
+export interface ScreenTint {
+  /** Tint color channels, 0..255. Ignored by `mode: 'invert'`. */
+  r: number;
+  g: number;
+  b: number;
+  /** Effect strength 0..1 (0 = no visible tint). */
+  a: number;
+  /**
+   * How the color combines with the frame (default 'blend'):
+   *  - 'blend': alpha-blend the color over the frame — damage red, pickup gold,
+   *    berserk red, radiation-suit green.
+   *  - 'invert': invulnerability — invert the frame's RGB (DOOM "god" palette), then
+   *    blend the color over at `a` (pass white for the classic bright wash).
+   *  - 'bright': light-amp / infrared — lerp the frame toward the color by `a` to fake
+   *    full-bright vision.
+   */
+  mode?: 'blend' | 'invert' | 'bright';
+}
+
 /** One billboarded world sprite to draw this frame (engine.md §4). */
 export interface SpriteInstance {
   x: number; // cell-space world position
@@ -59,6 +83,17 @@ export interface RenderScene {
   /** Weapon-bob screen offset for the view-model; consumers default to 0. */
   bobX: number;
   bobY: number;
+  /**
+   * Muzzle-flash frame composited OVER the weapon view-model when firing
+   * (doom-design §5). Optional/additive: existing scene builders may omit it. The game
+   * resolves it like viewWeapon (assets.getSprite(view.flashSprite, view.flashFrame, 0)).
+   */
+  viewFlash?: SpriteFrame | null;
+  /**
+   * Full-screen palette tint composited over the final frame (doom-design §5).
+   * Optional/additive: omit for no tint.
+   */
+  tint?: ScreenTint;
 }
 
 export interface Renderer {

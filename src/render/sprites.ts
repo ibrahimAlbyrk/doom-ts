@@ -86,6 +86,38 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
   }
 }
 
+/** Screen top-left for a bottom-center-anchored view-model frame, plus the bob offset. */
+function weaponAnchor(W: number, H: number, fw: number, fh: number, bobX: number, bobY: number) {
+  return { ox: (((W - fw) / 2 + bobX) | 0), oy: ((H - fh + bobY) | 0) };
+}
+
+/** Alpha-test blit of a view-model frame at (ox,oy), shaded by `fLight`. */
+function blitViewFrame(
+  back: Uint32Array,
+  W: number,
+  H: number,
+  frame: SpriteFrame,
+  ox: number,
+  oy: number,
+  fLight: number,
+): void {
+  const tex = frame.texture;
+  const fw = tex.width;
+  const fh = tex.height;
+  const px = tex.pixels;
+  for (let y = 0; y < fh; y++) {
+    const sy = oy + y;
+    if (sy < 0 || sy >= H) continue;
+    for (let x = 0; x < fw; x++) {
+      const sx = ox + x;
+      if (sx < 0 || sx >= W) continue;
+      const color = px[y * fw + x]!;
+      if ((color >>> 24) === 0) continue;
+      back[sy * W + sx] = shade(color, fLight);
+    }
+  }
+}
+
 /**
  * Composite the first-person weapon frame last, in screen space, anchored to the
  * bottom-center and lit by the current sector light + extralight (engine.md §10).
@@ -103,26 +135,30 @@ export function drawWeapon(
   bobX: number,
   bobY: number,
 ): void {
-  const tex = frame.texture;
-  const fw = tex.width;
-  const fh = tex.height;
-  const px = tex.pixels;
-  const ox = (((W - fw) / 2 + bobX) | 0);
-  const oy = ((H - fh + bobY) | 0);
-  const lvl = lightLevel(0, sectorLight, extralight, levels);
-  const fLight = brightness[lvl]!;
+  const { ox, oy } = weaponAnchor(W, H, frame.texture.width, frame.texture.height, bobX, bobY);
+  const fLight = brightness[lightLevel(0, sectorLight, extralight, levels)]!;
+  blitViewFrame(back, W, H, frame, ox, oy, fLight);
+}
 
-  for (let y = 0; y < fh; y++) {
-    const sy = oy + y;
-    if (sy < 0 || sy >= H) continue;
-    for (let x = 0; x < fw; x++) {
-      const sx = ox + x;
-      if (sx < 0 || sx >= W) continue;
-      const color = px[y * fw + x]!;
-      if ((color >>> 24) === 0) continue;
-      back[sy * W + sx] = shade(color, fLight);
-    }
-  }
+/**
+ * Composite the muzzle-flash frame OVER the weapon, full-bright (doom-design §5). The
+ * flash is positioned by the difference between its and the weapon's picture hotspots
+ * (originX/originY) so it lands at the barrel exactly as DOOM overlays the flash psprite,
+ * and rides the same bob. Both share the weapon's bottom-center anchor.
+ */
+export function drawViewFlash(
+  back: Uint32Array,
+  W: number,
+  H: number,
+  weapon: SpriteFrame,
+  flash: SpriteFrame,
+  bobX: number,
+  bobY: number,
+): void {
+  const base = weaponAnchor(W, H, weapon.texture.width, weapon.texture.height, bobX, bobY);
+  const ox = base.ox + ((weapon.originX - flash.originX) | 0);
+  const oy = base.oy + ((weapon.originY - flash.originY) | 0);
+  blitViewFrame(back, W, H, flash, ox, oy, 1); // full-bright: muzzle flash ignores sector light
 }
 
 /** Sector light at the camera cell — used to light the weapon overlay. */
