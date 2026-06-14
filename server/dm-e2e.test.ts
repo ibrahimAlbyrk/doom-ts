@@ -77,13 +77,13 @@ async function main(): Promise<void> {
     // results → rematch chain is proven over the wire either way).
     a.lobby.host({ ...defaultMatchConfig('deathmatch'), fragLimit: 1, timeLimit: 1 });
     await waitFor(() => a.lobby!.phase === 'inRoom' && !!a.lobby!.room, 'A hosting a DM room');
-    const code = a.lobby.room!.code;
-    ok(a.lobby.room!.config.mode === 'deathmatch', `A hosted a DEATHMATCH room ${code}`);
+    const roomId = a.lobby.room!.code; // RoomState.code is the server roomId (joinById target)
+    ok(a.lobby.room!.config.mode === 'deathmatch', `A hosted a DEATHMATCH room ${roomId}`);
 
     const b: Partial<Stack> = {};
     b.transport = new ColyseusTransport(url);
     b.lobby = new LobbyClient(b.transport, { name: 'MARINE-B', color: 0 });
-    b.lobby.join({ roomCode: code });
+    b.lobby.join(roomId);
     await waitFor(() => (a.lobby!.room?.players.length ?? 0) === 2 && (b.lobby!.room?.players.length ?? 0) === 2, 'both in room');
     ok(true, 'MARINE-B joined the DM room (roster size 2)');
 

@@ -85,10 +85,26 @@ export interface MatchResults {
   scores: ResultScore[];
 }
 
+/** One open room as the JOIN room-browser shows it (no codes, no addresses): everything a
+ *  row needs plus the opaque `id` used to join directly. `id` is the server's roomId — passed
+ *  straight to joinById and NEVER shown to the player. `joinable` is false for a room that has
+ *  already started or is full, so the browser greys it instead of letting it be selected. */
+export interface RoomInfo {
+  id: string;
+  hostName: string;
+  mode: GameMode;
+  skill: SkillId;
+  episode: number;
+  startLevel: number;
+  players: number;
+  maxPlayers: number;
+  joinable: boolean;
+}
+
 /** Client → server (multiplayer-plan §3.4). */
 export type ClientMessage =
   | { t: 'createRoom'; config: MatchConfig; name: string; color: LobbyColorId }
-  | { t: 'joinRoom'; roomCode?: string; addr?: string; name: string; color: LobbyColorId }
+  | { t: 'joinRoom'; roomId: string; name: string; color: LobbyColorId }
   | { t: 'leaveRoom' }
   | { t: 'setReady'; ready: boolean }
   | { t: 'setConfig'; config: Partial<MatchConfig> }
@@ -111,6 +127,9 @@ export interface LobbyTransport {
   connect(): Promise<void>;
   send(msg: ClientMessage): void;
   onMessage(handler: (msg: ServerMessage) => void): void;
+  /** Discover the open rooms for the JOIN browser (no codes/addresses): the real transport
+   *  queries the match server, the mock returns fakes so the UI + tests work offline. */
+  listRooms(): Promise<RoomInfo[]>;
   disconnect(): void;
 }
 

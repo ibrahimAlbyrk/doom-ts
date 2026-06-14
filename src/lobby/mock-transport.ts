@@ -15,6 +15,7 @@ import type {
   LobbyPlayer,
   LobbyTransport,
   MatchConfig,
+  RoomInfo,
   RoomState,
   ServerMessage,
 } from './protocol';
@@ -43,6 +44,15 @@ export class MockLobbyTransport implements LobbyTransport {
 
   connect(): Promise<void> {
     return Promise.resolve();
+  }
+
+  /** A couple of fake open rooms so the JOIN browser + tests work offline: one joinable co-op
+   *  and one in-progress deathmatch (greyed in the browser). Their ids are never shown. */
+  listRooms(): Promise<RoomInfo[]> {
+    return Promise.resolve([
+      { id: 'mock-coop', hostName: 'SARGE', mode: 'coop', skill: 3, episode: 0, startLevel: 0, players: 1, maxPlayers: 4, joinable: true },
+      { id: 'mock-dm', hostName: 'RIPPER', mode: 'deathmatch', skill: 4, episode: 0, startLevel: 0, players: 8, maxPlayers: 8, joinable: false },
+    ]);
   }
 
   onMessage(handler: (msg: ServerMessage) => void): void {

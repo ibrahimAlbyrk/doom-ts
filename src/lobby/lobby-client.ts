@@ -20,6 +20,7 @@ import type {
   LobbyTransport,
   MatchConfig,
   MatchResults,
+  RoomInfo,
   RoomState,
   ServerMessage,
 } from './protocol';
@@ -66,11 +67,18 @@ export class LobbyClient {
     );
   }
 
-  /** Join an existing room by code and/or address (the mock ignores the values). */
-  join(target: { roomCode?: string; addr?: string }): void {
+  /** Fetch the open rooms for the JOIN browser. No connection/room is entered — this is a
+   *  read-only discovery query the browser polls; join() is what actually enters a room. */
+  listRooms(): Promise<RoomInfo[]> {
+    return this.transport.listRooms();
+  }
+
+  /** Join the room the player picked in the browser, by its opaque server id (no codes,
+   *  no addresses) — the real transport maps it to joinById under the hood. */
+  join(roomId: string): void {
     this.reset('connecting');
     void this.transport.connect().then(() =>
-      this.send({ t: 'joinRoom', ...target, name: this.name, color: this.color }),
+      this.send({ t: 'joinRoom', roomId, name: this.name, color: this.color }),
     );
   }
 

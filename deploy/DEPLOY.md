@@ -1,19 +1,43 @@
 # DEPLOY — host DOOM-TS multiplayer on your own server
 
-Self-host the game so friends join by IP/URL. This runbook implements
+Self-host the game so friends play together. This runbook implements
 [`docs/research/multiplayer-deploy.md`](../docs/research/multiplayer-deploy.md), adapted to what
 this repo actually is: a **single npm package** with a **Colyseus** match server (not the
 `ws`-library monorepo the research doc sketched). The deploy shape is the doc's recommendation —
 **one Node process serves the built client + the realtime server, with Caddy in front for
 automatic HTTPS**.
 
+## The model: ONE shared server, a ROOM BROWSER, no codes (read this first)
+
+There are **no room codes and no addresses to type — anywhere**. Everyone who plays together
+points at **one shared server** (the URL is baked into the build / served same-origin — see
+below); the player never types it. Then in-game it's just:
+
+> **MULTIPLAYER → JOIN GAME** shows a **live list of open rooms** on that server. Pick one → you're
+> in its lobby. **HOST GAME** creates a room that simply **appears in everyone else's list**.
+
+So "joining" is selecting a row, never entering a code or `host:port`. For this to work, all the
+friends must reach the **same** server. Two ways to make that happen:
+
+1. **One person deploys the server** (the VPS path below) and the build is pointed at it via
+   `VITE_MP_SERVER_URL` (or it's served same-origin, so no URL is needed at all). Friends open the
+   site and every room they host/join lives on that one server.
+2. **No deploy:** one person runs the server on their machine/LAN and everyone opens **that host's
+   URL** (`http://<host-ip>:2567/`). Same effect — one shared server, rooms listed for all.
+
+The room list is served by a tiny **`GET /rooms`** route on the same process (a thin wrapper over
+Colyseus matchmaking — `server/rooms-route.ts`); the client polls it for the browser. Started/full
+rooms stay listed but greyed (IN PROGRESS / FULL), so nobody picks a dead room.
+
 ## How it's served (the one thing to understand)
 
 `server/prod.ts` is one Node process that, on a single port (default **2567**), serves:
 - the **static client** (`dist/`, from `vite build`) via Express, with the cross-origin-isolation
-  headers the game wants, and
+  headers the game wants,
 - the **Colyseus WebSocket** endpoint **and** its `/matchmake` HTTP routes (same `MatchRoom` the
-  dev server uses — packaging only, no game-logic change).
+  dev server uses — packaging only, no game-logic change), and
+- **`GET /rooms`** — the JOIN room-browser's discovery endpoint (the open rooms as JSON). Same
+  process, same origin, so the browser just polls it; no separate service.
 
 Because everything is one origin/port, the client connects to the **same host it was served
 from** — no hardcoded server URL. In dev the client still targets `:2567` (Vite serves on a
@@ -53,8 +77,9 @@ npm run start:prod         # serves client + ws on http://0.0.0.0:2567
 ```
 
 Open `http://localhost:2567/` (or `http://<your-LAN-ip>:2567/` from another machine on the LAN).
-Host a room in one tab, join from a second tab — you're in a co-op match over the **prod**
-process (not the Vite dev server). Plain HTTP means the page uses `ws://` (allowed because the
+In one tab **HOST GAME** to create a room; in a second tab **JOIN GAME** — the room appears in the
+list, click it and you're in a co-op match over the **prod** process (not the Vite dev server). No
+code or address is typed in either tab. Plain HTTP means the page uses `ws://` (allowed because the
 page itself is insecure); for "real" internet hosting use the TLS path below.
 
 > **Assets:** the Freedoom WADs are not in the repo (`*.wad` is gitignored). Download them per

@@ -122,12 +122,12 @@ async function part2(): Promise<void> {
     const a = makeStack(url, 'MARINE-A', 0);
     a.lobby.host(defaultMatchConfig('coop'));
     await waitFor(() => a.lobby.phase === 'inRoom' && !!a.lobby.room, 'A in room');
-    const code = a.lobby.room!.code;
-    ok(!!code, `A hosted room ${code}`);
+    const roomId = a.lobby.room!.code; // RoomState.code is the server roomId (joinById target)
+    ok(!!roomId, `A hosted room ${roomId}`);
 
-    // Client B joins by the room code.
+    // Client B joins by the room id (what the browser passes from the picked room).
     const b = makeStack(url, 'MARINE-B', 3);
-    b.lobby.join({ roomCode: code });
+    b.lobby.join(roomId);
     await waitFor(() => b.lobby.phase === 'inRoom' && (b.lobby.room?.players.length ?? 0) === 2, 'B joined');
     await waitFor(() => (a.lobby.room?.players.length ?? 0) === 2, 'A sees B in roster');
     ok(a.lobby.room!.players.length === 2, 'both marines share one room (roster size 2)');

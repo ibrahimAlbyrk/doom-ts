@@ -68,11 +68,25 @@ function ok(cond: boolean, msg: string): void {
   ok(!client.canStart, 'START re-locked after config change');
 }
 
+// ── listRooms: the JOIN browser's discovery query (no codes/addresses) ───────────
+{
+  const mock = new MockLobbyTransport();
+  const client = new LobbyClient(mock, { name: 'BROWSER' });
+  const rooms = await client.listRooms();
+  ok(rooms.length >= 1, 'listRooms returns the open rooms');
+  ok(rooms.every((r) => typeof r.id === 'string' && r.id.length > 0), 'each room carries an opaque id');
+  ok(rooms.some((r) => r.joinable), 'at least one room is joinable');
+  ok(rooms.some((r) => !r.joinable), 'a non-joinable (full/in-progress) room is listed too');
+  const r0 = rooms[0]!;
+  ok(typeof r0.hostName === 'string' && (r0.mode === 'coop' || r0.mode === 'deathmatch'), 'rows carry host + mode');
+  ok(typeof r0.players === 'number' && typeof r0.maxPlayers === 'number', 'rows carry players X/Y');
+}
+
 // ── non-host join: read-only, cannot start, cannot edit config ───────────────────
 {
   const mock = new MockLobbyTransport();
   const client = new LobbyClient(mock, { name: 'NEWCOMER' });
-  client.join({ roomCode: 'ABCD' });
+  client.join('room-abcd'); // join by opaque room id (the browser passes the picked room's id)
   await Promise.resolve();
   await Promise.resolve();
 
@@ -93,14 +107,14 @@ function ok(cond: boolean, msg: string): void {
 {
   const mock = new MockLobbyTransport();
   const client = new LobbyClient(mock, { name: 'LATE' });
-  client.join({ roomCode: 'FULL' });
+  client.join('room-full');
   await Promise.resolve();
   await Promise.resolve();
   // fill the room to capacity, then a fresh joiner is rejected
   const room = mock.getRoom()!;
   while (mock.getRoom()!.players.length < room.config.maxPlayers) mock.simulatePlayerJoin();
   const c2 = new LobbyClient(mock, { name: 'TOOLATE' });
-  c2.join({ roomCode: 'FULL' });
+  c2.join('room-full');
   await Promise.resolve();
   await Promise.resolve();
   ok(c2.phase === 'rejected', 'joining a full room is rejected');

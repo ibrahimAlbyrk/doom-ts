@@ -10,7 +10,7 @@
 // map to the Colyseus matchmaking API (create / joinById / joinOrCreate); every other client
 // message is a plain room.send.
 import { Client, Room } from 'colyseus.js';
-import type { ClientMessage, LobbyTransport, ServerMessage } from '../lobby/protocol';
+import type { ClientMessage, LobbyTransport, RoomInfo, ServerMessage } from '../lobby/protocol';
 import type { SessionTransport } from './remote-session';
 import type { TicCommand } from '../game/session';
 import type { Snapshot } from './snapshot';
@@ -48,6 +48,21 @@ export class ColyseusTransport implements LobbyTransport, SessionTransport {
     this.lobbyHandler = handler;
   }
 
+  /** List the open match rooms for the JOIN browser. colyseus.js 0.16 dropped the old
+   *  client.getAvailableRooms(), so we hit the server's own GET /rooms route (a thin wrapper
+   *  over matchMaker.query — see server/rooms-route.ts) at the SAME host the ws endpoint uses
+   *  (ws→http, wss→https). Network errors surface as an empty list (the browser's empty state). */
+  async listRooms(): Promise<RoomInfo[]> {
+    const base = this.endpoint.replace(/^ws/, 'http').replace(/\/+$/, '');
+    try {
+      const res = await fetch(`${base}/rooms`);
+      if (!res.ok) return [];
+      return (await res.json()) as RoomInfo[];
+    } catch {
+      return [];
+    }
+  }
+
   send(msg: ClientMessage): void {
     void this.route(msg);
   }
@@ -60,10 +75,8 @@ export class ColyseusTransport implements LobbyTransport, SessionTransport {
         this.room = await client.create('match', { config: msg.config, name: msg.name, color: msg.color });
         this.wire();
       } else if (msg.t === 'joinRoom') {
-        const opts = { name: msg.name, color: msg.color };
-        this.room = msg.roomCode
-          ? await client.joinById(msg.roomCode, opts)
-          : await client.joinOrCreate('match', opts);
+        // The browser already picked a concrete room; join it directly by its server id.
+        this.room = await client.joinById(msg.roomId, { name: msg.name, color: msg.color });
         this.wire();
       } else {
         this.room?.send(msg.t, msg);

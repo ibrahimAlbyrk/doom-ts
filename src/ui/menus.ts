@@ -7,7 +7,7 @@ import type { RenderConfig, Audio, Bindings, Action, Input, SkillId } from '../c
 import { RESOLUTION_TIERS } from '../core';
 import { SKILLS } from '../data';
 import { EPISODE1 } from '../levels';
-import type { LobbyClient, MatchConfig, RoomStatus } from '../lobby';
+import type { LobbyClient, MatchConfig, RoomInfo, RoomStatus } from '../lobby';
 import { defaultMatchConfig } from '../lobby';
 import { TextureCache, drawText, FONT_LINE_HEIGHT, HUD_FONT } from './gfx';
 
@@ -92,7 +92,7 @@ const PAGE_TITLE: Record<PageId, string> = {
   main: 'DOOM // TS',
   multiplayer: 'MULTIPLAYER',
   mpHost: 'CREATE ROOM',
-  mpJoin: 'JOIN ROOM',
+  mpJoin: 'OPEN ROOMS',
   mpLobby: 'LOBBY',
   episodes: 'WHICH EPISODE',
   skill: 'CHOOSE SKILL',
@@ -150,26 +150,36 @@ export class Menus {
   private capturing: Action | null = null;
   /** The host's working config on the create-room screen (before the room exists). */
   private hostDraft: MatchConfig = defaultMatchConfig('coop');
-  /** The join screen's editable text fields (room code / host address). */
-  private readonly joinFields = { code: '', addr: '' };
-  /** Non-null while a join text field captures typed characters. */
-  private typing: 'code' | 'addr' | null = null;
+  /** JOIN room-browser state: the last-fetched open rooms, an in-flight flag, and whether the
+   *  last fetch failed — so the screen can show a list, a loading line, or the empty state. */
+  private rooms: RoomInfo[] = [];
+  private roomsLoading = false;
+  private roomsFailed = false;
+  /** Auto-refresh poll while the browser is open (cleared when it closes). */
+  private roomsTimer: ReturnType<typeof setInterval> | null = null;
+  /** The display canvas + its height from the last draw, for mapping a click to a room row. */
+  private canvas: HTMLCanvasElement | null = null;
+  private viewH = 0;
+  /** Per-row click targets recorded each draw of the browser (internal-resolution coords). */
+  private rowHitboxes: { item: number; y0: number; y1: number }[] = [];
 
   constructor(cache: TextureCache, ctx: MenuContext) {
     this.cache = cache;
     this.ctx = ctx;
     this.applyVolumes();
+    window.addEventListener('mousedown', (e) => this.onBrowserClick(e));
   }
 
   /** Reset navigation to a root page; call when entering the menu or pause state. */
   open(root: 'main' | 'pause'): void {
+    this.stopRoomsRefresh();
     this.stack = [{ page: root, cursor: 0 }];
   }
 
   /** Advance navigation/settings for one input frame. Returns a command or null. */
   update(input: MenuInput): MenuCommand | null {
-    // While rebinding or typing a join field, a window listener owns the keys; freeze nav.
-    if (this.capturing || this.typing) return null;
+    // While rebinding, a window listener owns the keys; freeze nav.
+    if (this.capturing) return null;
     const frame = this.stack[this.stack.length - 1]!;
 
     // Networked match start is server-driven + asynchronous: once `matchStarting` arrives
@@ -222,6 +232,9 @@ export class Menus {
     ctx.fillStyle = '#0a0a0d';
     ctx.fillRect(0, 0, w, h);
     ctx.imageSmoothingEnabled = false;
+    // Remember the surface + its height so a mouse click can be mapped back to a room row.
+    this.canvas = ctx.canvas;
+    this.viewH = h;
 
     const frame = this.stack[this.stack.length - 1]!;
     const scale = Math.max(1, Math.round(w / 320));
@@ -233,15 +246,18 @@ export class Menus {
     } else if (frame.page === 'mpLobby') {
       const itemsTop = this.drawLobbyHeader(ctx, w, h, scale);
       this.drawItems(ctx, frame, w, h, scale, itemsTop);
+    } else if (frame.page === 'mpJoin') {
+      this.drawRoomBrowser(ctx, frame, w, h, scale);
     } else {
       this.drawItems(ctx, frame, w, h, scale);
     }
 
-    const hint = this.typing
-      ? 'TYPE   ENTER OK   ESC DONE'
-      : this.capturing
-        ? 'PRESS A KEY   ESC CANCELS'
-        : 'W/S MOVE   A/D CHANGE   E SELECT   ESC BACK';
+    const hint =
+      frame.page === 'mpJoin'
+        ? 'W/S MOVE   E/CLICK JOIN   ESC BACK'
+        : this.capturing
+          ? 'PRESS A KEY   ESC CANCELS'
+          : 'W/S MOVE   A/D CHANGE   E SELECT   ESC BACK';
     drawText(ctx, this.cache, HUD_FONT, hint, w / 2, h - 14 * scale, {
       scale,
       align: 'center',
@@ -447,8 +463,9 @@ export class Menus {
     return items;
   }
 
-  /** Draw the room code + roster + status above the lobby's interactive rows. Returns
-   *  the top fraction those rows should start at (it slides down as the roster grows). */
+  /** Draw the roster + status above the lobby's interactive rows. Returns the top fraction
+   *  those rows should start at (it slides down as the roster grows). No room code is shown —
+   *  rooms are entered from the JOIN browser, never by code. */
   private drawLobbyHeader(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number): number {
     const lobby = this.ctx.lobby;
     const room = lobby?.room;
@@ -457,7 +474,7 @@ export class Menus {
       drawText(ctx, this.cache, HUD_FONT, msg, w / 2, h * 0.4, { scale, align: 'center' });
       return 0.5;
     }
-    drawText(ctx, this.cache, HUD_FONT, `ROOM ${room.code}   ${statusLabel(room.status)}`, w / 2, h * 0.2, {
+    drawText(ctx, this.cache, HUD_FONT, statusLabel(room.status), w / 2, h * 0.2, {
       scale,
       align: 'center',
     });
@@ -474,33 +491,150 @@ export class Menus {
     return Math.min(0.62, 0.34 + room.players.length * 0.06);
   }
 
-  /** Capture typed characters into a join text field until Enter/Escape (mirrors the
-   *  key-rebind capture: a capture-phase listener keeps keys out of the game input). */
-  private beginTextCapture(field: 'code' | 'addr'): void {
-    if (this.typing) return;
-    this.typing = field;
-    const max = field === 'code' ? 6 : 24;
-    const handler = (e: KeyboardEvent): void => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.code === 'Enter' || e.code === 'Escape') {
-        window.removeEventListener('keydown', handler, true);
-        this.typing = null;
-        this.sound('select');
-        return;
-      }
-      if (e.code === 'Backspace') {
-        this.joinFields[field] = this.joinFields[field].slice(0, -1);
-        return;
-      }
-      if (e.key.length === 1 && /[A-Za-z0-9.:]/.test(e.key) && this.joinFields[field].length < max) {
-        this.joinFields[field] += field === 'code' ? e.key.toUpperCase() : e.key;
-      }
+  // ── JOIN room browser ────────────────────────────────────────────────────────
+
+  /** Open the JOIN browser: show the screen, fetch the open rooms once, and start polling so
+   *  the list stays live. No codes, no addresses — the player just picks a room. */
+  private openRoomBrowser(): null {
+    this.push('mpJoin');
+    this.rooms = [];
+    this.refreshRooms();
+    this.stopRoomsRefresh();
+    this.roomsTimer = setInterval(() => this.refreshRooms(), 2500);
+    return null;
+  }
+
+  /** Pull the current open rooms from the lobby transport into the browser. Tolerant of a
+   *  failed fetch (offline / server down) — that just yields the empty state. */
+  private refreshRooms(): void {
+    const lobby = this.ctx.lobby;
+    if (!lobby) return;
+    this.roomsLoading = true;
+    void lobby
+      .listRooms()
+      .then((rooms) => {
+        this.rooms = rooms;
+        this.roomsFailed = false;
+      })
+      .catch(() => {
+        this.roomsFailed = true;
+      })
+      .finally(() => {
+        this.roomsLoading = false;
+      });
+  }
+
+  private stopRoomsRefresh(): void {
+    if (this.roomsTimer !== null) {
+      clearInterval(this.roomsTimer);
+      this.roomsTimer = null;
+    }
+  }
+
+  /** Navigable rows: one per open room (joinable ones enter directly; greyed ones no-op),
+   *  then a manual REFRESH and BACK. */
+  private roomBrowserItems(): MenuItem[] {
+    const items: MenuItem[] = this.rooms.map((r) => ({
+      label: r.hostName,
+      onSelect: () => this.joinRoom(r),
+    }));
+    items.push({
+      label: 'REFRESH',
+      onSelect: () => {
+        this.refreshRooms();
+        return null;
+      },
+    });
+    items.push({ label: 'BACK', onSelect: () => this.back() });
+    return items;
+  }
+
+  /** Enter the picked room directly by its opaque id (no code/address). A non-joinable row
+   *  (in progress / full) does nothing. */
+  private joinRoom(r: RoomInfo): MenuCommand | null {
+    if (!r.joinable) return null;
+    this.stopRoomsRefresh();
+    this.ctx.lobby?.join(r.id);
+    return this.push('mpLobby');
+  }
+
+  /** Draw the room list: a header count, one row per room (host, mode, skill, players X/Y, and
+   *  a FULL/IN PROGRESS tag for greyed rooms), the empty state, then REFRESH + BACK. Records a
+   *  click target per row so a mouse click joins/activates it. */
+  private drawRoomBrowser(ctx: CanvasRenderingContext2D, frame: Frame, w: number, h: number, baseScale: number): void {
+    const scale = Math.max(1, baseScale - 1);
+    const lineH = (FONT_LINE_HEIGHT + 6) * scale;
+    this.rowHitboxes = [];
+
+    const header = this.roomsLoading && this.rooms.length === 0
+      ? 'SEARCHING...'
+      : this.roomsFailed
+        ? 'SERVER UNREACHABLE'
+        : `${this.rooms.length} OPEN ROOM${this.rooms.length === 1 ? '' : 'S'}`;
+    drawText(ctx, this.cache, HUD_FONT, header, w / 2, h * 0.2, { scale, align: 'center' });
+
+    let y = h * 0.3;
+    const drawRow = (item: number, render: () => void): void => {
+      this.rowHitboxes.push({ item, y0: y - lineH * 0.5, y1: y + lineH * 0.5 });
+      const selected = item === frame.cursor;
+      ctx.globalAlpha = selected ? 1 : 0.55;
+      if (selected) drawText(ctx, this.cache, HUD_FONT, '>', w * 0.06, y, { scale });
+      render();
+      ctx.globalAlpha = 1;
+      y += lineH;
     };
-    window.addEventListener('keydown', handler, true);
+
+    if (this.rooms.length === 0 && !this.roomsLoading) {
+      drawText(ctx, this.cache, HUD_FONT, 'NO OPEN ROOMS', w / 2, h * 0.42, { scale, align: 'center' });
+      drawText(ctx, this.cache, HUD_FONT, 'REFRESH OR HOST ONE', w / 2, h * 0.42 + lineH, { scale: Math.max(1, scale - 1), align: 'center' });
+      y = h * 0.62;
+    } else {
+      this.rooms.forEach((r, i) => {
+        drawRow(i, () => {
+          const tag = r.joinable
+            ? `${r.players}/${r.maxPlayers}`
+            : r.players >= r.maxPlayers
+              ? 'FULL'
+              : 'IN PROGRESS';
+          ctx.globalAlpha *= r.joinable ? 1 : 0.6; // greyed when not joinable
+          drawText(ctx, this.cache, HUD_FONT, r.hostName, w * 0.1, y, { scale });
+          drawText(ctx, this.cache, HUD_FONT, `${r.mode === 'coop' ? 'CO-OP' : 'DM'} SK${r.skill}`, w * 0.46, y, { scale });
+          drawText(ctx, this.cache, HUD_FONT, tag, w * 0.9, y, { scale, align: 'right' });
+        });
+      });
+      y = Math.max(y, h * 0.62);
+    }
+
+    // REFRESH + BACK always reachable (they are the last two items()).
+    const n = this.rooms.length;
+    drawRow(n, () => drawText(ctx, this.cache, HUD_FONT, 'REFRESH', w / 2, y, { scale, align: 'center' }));
+    drawRow(n + 1, () => drawText(ctx, this.cache, HUD_FONT, 'BACK', w / 2, y, { scale, align: 'center' }));
+  }
+
+  /** Map a mouse click to a browser row and activate it (mouse-to-join). Only acts while the
+   *  browser is the visible page; everything else (gameplay fire, other menus) is ignored. */
+  private onBrowserClick(e: MouseEvent): void {
+    if (e.button !== 0 || this.topPage !== 'mpJoin' || !this.canvas) return;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const sy = ((e.clientY - rect.top) / rect.height) * this.viewH;
+    const hit = this.rowHitboxes.find((b) => sy >= b.y0 && sy < b.y1);
+    if (!hit) return;
+    const items = this.items('mpJoin');
+    const it = items[hit.item];
+    if (!it?.onSelect) return;
+    const frame = this.stack[this.stack.length - 1]!;
+    frame.cursor = hit.item;
+    this.sound('select');
+    it.onSelect(); // join (push mpLobby) / refresh / back — all return null or pop internally
+  }
+
+  private get topPage(): PageId {
+    return this.stack[this.stack.length - 1]!.page;
   }
 
   private back(): MenuCommand | null {
+    if (this.topPage === 'mpJoin') this.stopRoomsRefresh(); // leaving the browser: stop polling
     if (this.stack.length > 1) {
       this.stack.pop();
       return null;
@@ -544,7 +678,7 @@ export class Menus {
               return this.push('mpHost');
             },
           },
-          { label: 'JOIN GAME', onSelect: () => this.push('mpJoin') },
+          { label: 'JOIN GAME', onSelect: () => this.openRoomBrowser() },
           { label: 'BACK', onSelect: () => this.back() },
         ];
       case 'mpHost':
@@ -560,35 +694,7 @@ export class Menus {
           { label: 'BACK', onSelect: () => this.back() },
         ];
       case 'mpJoin':
-        return [
-          {
-            label: 'ROOM CODE',
-            value: this.joinFields.code || '____',
-            onSelect: () => {
-              this.beginTextCapture('code');
-              return null;
-            },
-          },
-          {
-            label: 'ADDRESS',
-            value: this.joinFields.addr || 'HOST:PORT',
-            onSelect: () => {
-              this.beginTextCapture('addr');
-              return null;
-            },
-          },
-          {
-            label: 'JOIN',
-            onSelect: () => {
-              this.ctx.lobby?.join({
-                roomCode: this.joinFields.code || undefined,
-                addr: this.joinFields.addr || undefined,
-              });
-              return this.push('mpLobby');
-            },
-          },
-          { label: 'BACK', onSelect: () => this.back() },
-        ];
+        return this.roomBrowserItems();
       case 'mpLobby':
         return this.lobbyItems();
       case 'episodes':

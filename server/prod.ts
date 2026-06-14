@@ -19,6 +19,7 @@ import express from 'express';
 import { Server } from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { MatchRoom } from './match-room';
+import { queryMatchRooms } from './rooms-route';
 
 const PORT = Number(process.env.PORT ?? 2567);
 // HOST 0.0.0.0 so friends on the LAN / internet can reach it (not just localhost).
@@ -35,6 +36,14 @@ app.use((_req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   next();
+});
+
+// JOIN room-browser discovery (same-origin here, so no CORS needed): the open match rooms as
+// RoomInfo[]. Must come before the SPA fallback so it isn't swallowed as a client route.
+app.get('/rooms', (_req, res) => {
+  void queryMatchRooms()
+    .then((rooms) => res.json(rooms))
+    .catch(() => res.json([]));
 });
 
 app.use(express.static(clientDir));

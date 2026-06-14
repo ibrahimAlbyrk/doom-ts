@@ -101,6 +101,7 @@ export class MatchRoom extends Room {
 
     // The authoritative loop runs at the fixed step; it no-ops until START.
     this.setSimulationInterval((dtMs) => this.step(dtMs), (FIXED_STEP * 1000) | 0);
+    this.updateMetadata(); // list the room for the JOIN browser the moment it exists
     console.log(`[room ${this.roomId}] created (${config.mode}, max ${config.maxPlayers})`);
   }
 
@@ -237,6 +238,7 @@ export class MatchRoom extends Room {
     this.started = true;
 
     this.roomState.status = 'inMatch';
+    this.updateMetadata(); // now IN PROGRESS — the browser greys this room
     this.broadcastLobby({ t: 'matchStarting', config: cfg, seed, levelId: this.levelId });
     this.broadcastSnapshot(); // an immediate baseline so both clients spawn at once
     console.log(`[room ${this.roomId}] MATCH START — ${this.levelId} (${mode.id}), ${this.roomState.players.length} marines, FF ${world.friendlyFire}`);
@@ -405,6 +407,7 @@ export class MatchRoom extends Room {
     this.mode = null;
     this.posHistory.length = 0;
     this.roomState.status = 'postMatch';
+    this.updateMetadata(); // match over — but still not joinable (postMatch), stays greyed
     this.broadcastLobby({ t: 'matchEnded', results });
     console.log(`[room ${this.roomId}] match ended (${results.mode}) — ${results.scores.length} players`);
   }
@@ -438,7 +441,25 @@ export class MatchRoom extends Room {
   }
 
   private broadcastRoomState(): void {
+    this.updateMetadata(); // keep the JOIN browser's host/mode/player-count/joinable in sync
     this.broadcastLobby({ t: 'roomState', room: this.snapshot() });
+  }
+
+  /** Publish the browser-relevant fields to the matchmaker cache so GET /rooms (the JOIN
+   *  browser) sees them. `joinable` is false once the match starts or the room fills, so the
+   *  browser greys the row (IN PROGRESS / FULL) instead of letting it be selected. */
+  private updateMetadata(): void {
+    const r = this.roomState;
+    const host = r.players.find((p) => p.isHost);
+    const joinable = !this.started && r.status !== 'starting' && r.players.length < r.config.maxPlayers;
+    void this.setMetadata({
+      hostName: host?.name ?? 'MARINE',
+      mode: r.config.mode,
+      skill: r.config.skill,
+      episode: r.config.episode,
+      startLevel: r.config.startLevel,
+      joinable,
+    });
   }
 
   private broadcastLobby(msg: ServerMessage): void {
