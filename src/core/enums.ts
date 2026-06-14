@@ -12,7 +12,8 @@ export type GameStateId =
   | 'intermission'
   | 'gameover'
   | 'victory'
-  | 'credits';
+  | 'credits'
+  | 'mpResults'; // post-deathmatch results screen (winner + frag table, multiplayer-plan §4)
 
 /** Skill levels 1..5 (doom-design.md §7). */
 export type SkillId = 1 | 2 | 3 | 4 | 5;

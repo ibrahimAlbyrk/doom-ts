@@ -10,24 +10,29 @@ import { Room, Client, generateId } from 'colyseus';
 import { EventBus, Rng, FIXED_STEP, SECONDS_PER_TIC } from '../src/core';
 import type { GameEventMap, SimContext } from '../src/core';
 import { World } from '../src/entities';
-import { GameSession, type TicCommand } from '../src/game/session';
+import { GameSession, type TicCommand, type LagCompensator } from '../src/game/session';
 import { EPISODE1 } from '../src/levels';
 import { buildSnapshot } from '../src/session/snapshot';
 import type {
   ClientMessage,
   MatchConfig,
+  MatchResults,
+  ResultScore,
   RoomState,
   LobbyPlayer,
   ServerMessage,
 } from '../src/lobby/protocol';
 import { computeStatus, defaultMatchConfig } from '../src/lobby/protocol';
-import { createGameMode, type GameMode, type ModeContext } from './modes/game-mode';
+import { createGameMode, isScoreKeeper, type GameMode, type ModeContext } from './modes/game-mode';
 import { ServerSoundCollector } from './sound-collector';
 
 /** Sim steps per network snapshot: 60Hz sim / 3 ≈ 20Hz broadcast ([netcode §4.5]). */
 const STEPS_PER_SNAPSHOT = 3;
 /** Doom-tics advanced per fixed sim step (same factor the sim/client use). */
 const TICS_PER_STEP = FIXED_STEP / SECONDS_PER_TIC;
+/** Broadcasts of marine positions kept for hitscan lag-comp rewind (~2s at 20Hz) — long
+ *  enough to cover plausible RTT + interpolation delay ([netcode §5.6]). */
+const LAG_HISTORY = 40;
 const EPISODES = [EPISODE1];
 
 type CreateOptions = { config?: MatchConfig; name?: string; color?: number };
@@ -61,6 +66,17 @@ export class MatchRoom extends Room {
   /** sim id → that client's latest command (held until replaced — loss-tolerant). */
   private readonly commands = new Map<number, TicCommand>();
 
+  // Hitscan lag-compensation (deathmatch, multiplayer-plan §5 / [netcode §5.6]). The server keeps
+  // a short ring of past marine positions (one entry per broadcast, keyed by the network tick the
+  // client interpolates against) and, around a DM shooter's weapon step, rewinds the OTHER marines
+  // to where that shooter saw them — so a shot on a moving target registers under latency.
+  private readonly posHistory: { tick: number; pos: Map<number, { x: number; y: number }> }[] = [];
+  private lagSaved: Map<number, { x: number; y: number }> | null = null;
+  private readonly lagComp: LagCompensator = {
+    rewind: (shooterId, cmd) => this.lagRewind(shooterId, cmd),
+    restore: () => this.lagRestore(),
+  };
+
   // ── lifecycle ────────────────────────────────────────────────────────────────
 
   override onCreate(options: CreateOptions): void {
@@ -75,7 +91,7 @@ export class MatchRoom extends Room {
       this.onSetConfig(client, msg.config),
     );
     this.onMessage('startMatch', (client) => this.onStart(client));
-    this.onMessage('rematch', () => this.onRematch());
+    this.onMessage('rematch', (client) => this.onRematch(client));
     this.onMessage('leaveRoom', (client) => client.leave());
     // Gameplay channel: the client's per-tick command for its own marine.
     this.onMessage('cmd', (client, cmd: TicCommand) => {
@@ -163,10 +179,12 @@ export class MatchRoom extends Room {
     this.startMatch();
   }
 
-  private onRematch(): void {
-    for (const pl of this.roomState.players) pl.ready = false;
-    this.recompute();
-    this.broadcastRoomState();
+  private onRematch(client: Client): void {
+    const p = this.playerOf(client);
+    if (!p?.isHost || this.started || this.roomState.status !== 'postMatch') return;
+    // Restart with the SAME config: startMatch re-seeds a fresh sim + zeroed scores and
+    // re-broadcasts matchStarting, so every client drops into a new round (multiplayer-plan §4).
+    this.startMatch();
   }
 
   // ── match seeding (multiplayer-plan §3.6) ──────────────────────────────────────
@@ -215,6 +233,7 @@ export class MatchRoom extends Room {
     this.accumulatorSec = 0;
     this.snapCounter = 0;
     this.commands.clear();
+    this.posHistory.length = 0;
     this.started = true;
 
     this.roomState.status = 'inMatch';
@@ -243,19 +262,24 @@ export class MatchRoom extends Room {
     // co-op movement speed matches single-player) regardless of timer jitter.
     this.accumulatorSec += Math.min(dtMs / 1000, 0.25);
     while (this.accumulatorSec >= FIXED_STEP) {
-      const r = this.sim.stepNetwork(this.commands);
+      // Deathmatch hitscan is lag-compensated (rewind other marines to the shooter's view-time);
+      // co-op passes none, so its world is never rewound.
+      const r = this.sim.stepNetwork(this.commands, this.mode.id === 'deathmatch' ? this.lagComp : undefined);
       this.accumulatorSec -= FIXED_STEP;
       this.tick++;
-      // Mode bookkeeping each step: co-op respawn timers (dm frag/time limits in P5).
+      // Mode bookkeeping each step: co-op respawn timers; dm respawns + frag/time limits.
       const limitHit = this.mode.update(this.modeContext(), TICS_PER_STEP);
       this.sounds.notePickups();
       if (r.exit) {
-        // Shared progression: a marine reached the exit → advance the whole party, or end the
-        // match on the final level (multiplayer-plan §4 / §5).
-        if (this.mode.onLevelExit(this.modeContext()) === 'advance') this.advanceLevel();
-        else this.endMatch();
-        if (!this.started) return; // match ended (episode complete) — stop stepping
-        continue; // new level seeded; advanceLevel already broadcast its baseline
+        // Co-op: a marine reached the exit → advance the whole party, or end on the final level.
+        // Deathmatch: 'stay' — the arena has no exit, so a stumbled-onto exit is ignored.
+        const outcome = this.mode.onLevelExit(this.modeContext());
+        if (outcome === 'advance') this.advanceLevel();
+        else if (outcome === 'victory') this.endMatch();
+        if (outcome !== 'stay') {
+          if (!this.started) return; // match ended (episode complete) — stop stepping
+          continue; // new level seeded; advanceLevel already broadcast its baseline
+        }
       }
       if (limitHit) {
         this.endMatch();
@@ -290,28 +314,111 @@ export class MatchRoom extends Room {
     const world = this.world;
     const level = world?.level;
     if (!sim || !world || !level) return;
+    const mode = this.mode;
     const snap = buildSnapshot(world, level, {
       tick: this.tick,
-      mode: this.mode?.id ?? 'coop',
+      mode: mode?.id ?? 'coop',
       isFiring: (id) => sim.isFiring(id),
       processedSeq: (id) => sim.processedSeqFor(id),
       metaFor: (id) => this.metaBySimId.get(id) ?? { sid: '', name: '', color: 0 },
+      scoreFor: (id) => this.scoreFor(id),
+      timeRemaining: mode && isScoreKeeper(mode) ? mode.timeRemainingSec : 0,
     });
     snap.sounds = this.sounds?.flush() ?? []; // positional SFX collected since the last broadcast
     this.broadcast('snapshot', snap);
+    this.recordPositions(); // remember this broadcast's marine positions for lag-comp rewind
+  }
+
+  /** Authoritative frags/deaths for a sim player id (zeroed in co-op / for an unseen id). */
+  private scoreFor(id: number): { frags: number; deaths: number } {
+    return this.mode && isScoreKeeper(this.mode) ? this.mode.scoreFor(id) : { frags: 0, deaths: 0 };
+  }
+
+  /** Snapshot the live marine positions into the lag-comp ring, keyed by the network tick this
+   *  broadcast carries (the value clients interpolate against), trimmed to the ring length. */
+  private recordPositions(): void {
+    const world = this.world;
+    if (!world) return;
+    const pos = new Map<number, { x: number; y: number }>();
+    for (const p of world.players.values()) pos.set(p.id, { x: p.x, y: p.y });
+    this.posHistory.push({ tick: this.tick, pos });
+    while (this.posHistory.length > LAG_HISTORY) this.posHistory.shift();
+  }
+
+  /** Move every OTHER live marine back to where `shooterId` saw it at `cmd.viewTick` — the same
+   *  interpolated point the client rendered — so the upcoming weapon step resolves against it.
+   *  Saves the live positions for restore(). No-op without a usable view-tick / history. */
+  private lagRewind(shooterId: number, cmd: TicCommand): void {
+    this.lagSaved = null;
+    const world = this.world;
+    const vt = cmd.viewTick;
+    if (vt == null || vt <= 0 || this.posHistory.length < 2 || !world) return;
+
+    const hist = this.posHistory;
+    let bIdx = hist.length - 1;
+    for (let i = 0; i < hist.length; i++) {
+      if (hist[i]!.tick >= vt) {
+        bIdx = i;
+        break;
+      }
+    }
+    const a = hist[Math.max(0, bIdx - 1)]!;
+    const b = hist[bIdx]!;
+    const span = b.tick - a.tick;
+    const t = span > 0 ? Math.min(1, Math.max(0, (vt - a.tick) / span)) : 0;
+
+    const saved = new Map<number, { x: number; y: number }>();
+    for (const p of world.players.values()) {
+      if (p.id === shooterId || p.health <= 0) continue;
+      const pa = a.pos.get(p.id);
+      const pb = b.pos.get(p.id);
+      if (!pa || !pb) continue;
+      saved.set(p.id, { x: p.x, y: p.y });
+      p.x = pa.x + (pb.x - pa.x) * t;
+      p.y = pa.y + (pb.y - pa.y) * t;
+    }
+    this.lagSaved = saved;
+  }
+
+  /** Restore the live positions the matching lagRewind() saved (called right after the shot). */
+  private lagRestore(): void {
+    const world = this.world;
+    if (this.lagSaved && world) {
+      for (const [id, pos] of this.lagSaved) {
+        const p = world.players.get(id);
+        if (p) {
+          p.x = pos.x;
+          p.y = pos.y;
+        }
+      }
+    }
+    this.lagSaved = null;
   }
 
   private endMatch(): void {
     this.started = false;
     this.sounds?.dispose();
-    const mode = this.mode?.id ?? 'coop';
+    const results = this.buildResults(); // read scores BEFORE tearing the mode down
     this.sim = null;
     this.world = null;
     this.sounds = null;
     this.mode = null;
+    this.posHistory.length = 0;
     this.roomState.status = 'postMatch';
-    this.broadcastLobby({ t: 'matchEnded', results: { mode } });
-    console.log(`[room ${this.roomId}] match ended (episode complete)`);
+    this.broadcastLobby({ t: 'matchEnded', results });
+    console.log(`[room ${this.roomId}] match ended (${results.mode}) — ${results.scores.length} players`);
+  }
+
+  /** The final standings the results screen draws: one row per marine (sim id, nametag, color,
+   *  frags/deaths) plus the mode + its limits. Co-op rows carry zero frags. */
+  private buildResults(): MatchResults {
+    const cfg = this.roomState.config;
+    const scores: ResultScore[] = [];
+    for (const [simId, meta] of this.metaBySimId) {
+      const s = this.scoreFor(simId);
+      scores.push({ id: String(simId), name: meta.name, color: meta.color, frags: s.frags, deaths: s.deaths });
+    }
+    return { mode: this.mode?.id ?? cfg.mode, fragLimit: cfg.fragLimit, timeLimit: cfg.timeLimit, scores };
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────────

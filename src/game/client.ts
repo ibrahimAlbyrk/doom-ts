@@ -10,7 +10,19 @@ import { FIXED_STEP, SECONDS_PER_TIC, CELL_SIZE, VIEW_HEIGHT } from '../core';
 import { cellOf } from '../world';
 import { mapDataFor } from '../levels';
 import { GameSoundEvents, type AudioManager } from '../audio';
-import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
+import {
+  TextureCache,
+  HudController,
+  Intermission,
+  Menus,
+  Results,
+  drawAutomap,
+  drawScoreboard,
+  type LevelTally,
+  type MenuInput,
+  type ResultsAction,
+} from '../ui';
+import type { ScoreState } from '../score';
 import {
   LocalSession,
   RemoteSession,
@@ -74,6 +86,8 @@ export class GameClient {
   readonly cache: TextureCache;
   readonly hud: HudController;
   readonly intermission: Intermission;
+  /** Post-match deathmatch results screen (winner + final frag table + REMATCH/LEAVE). */
+  readonly results: Results;
   readonly menus: Menus;
   /** The client lobby state machine the multiplayer menus drive. Backed by a real
    *  Colyseus-room transport (multiplayer-plan §3 / P2): host/join hit the match server,
@@ -97,6 +111,9 @@ export class GameClient {
 
   private automapOn = false;
   private cmdSeq = 0;
+  /** The config of the active networked match (null offline) — supplies the scoreboard/results
+   *  their mode + frag/time limits, which the snapshot doesn't carry. */
+  private matchConfig: MatchConfig | null = null;
   /** Id of the level the presenter last set up for. Online the server can advance the whole
    *  co-op party to the next level mid-match (no client intermission), so we detect the
    *  change here and re-run the per-level presentation setup (music/HUD/view-floor). */
@@ -116,6 +133,7 @@ export class GameClient {
     this.cache = new TextureCache(ctx.assets);
     this.hud = new HudController(this.cache, ctx.events);
     this.intermission = new Intermission(this.cache);
+    this.results = new Results(this.cache);
     this.lobby = new LobbyClient(this.transport, { name: 'PLAYER 1' });
     this.menus = new Menus(this.cache, {
       config: ctx.config,
@@ -158,7 +176,7 @@ export class GameClient {
    * geometry, swap it in for the LocalSession, and enter networked PLAYING. The server is
    * authoritative — snapshots fill the world in. Single-player offline is untouched.
    */
-  startNetworkedMatch(_config: MatchConfig, levelId: string): void {
+  startNetworkedMatch(config: MatchConfig, levelId: string): void {
     // Dev netcode-smoothness check: an optional artificial-latency wrapper around the session
     // channel (set localStorage 'mpNetSim' = "120,30" or ?netsim=120,30). Off by default, so a
     // real match — and all of offline single-player — is never delayed.
@@ -167,7 +185,14 @@ export class GameClient {
     const remote = new RemoteSession(transport);
     remote.enterMatch(levelId);
     this.session = remote;
+    this.matchConfig = config; // the scoreboard/results read its mode + frag/time limits
     this.onLevelLoaded();
+  }
+
+  /** Are we in a networked match (vs offline single-player)? Gates the scoreboard/results UI
+   *  and the Tab→scoreboard repurpose so single-player keeps its automap on Tab. */
+  private get isNetworked(): boolean {
+    return this.matchConfig !== null && this.session !== this.localSession;
   }
 
   teardownLevel(): void {
@@ -179,6 +204,57 @@ export class GameClient {
     // After an online match, fall back to the offline authority so a subsequent
     // single-player game runs locally again (the RemoteSession is single-use).
     if (this.session !== this.localSession) this.session = this.localSession;
+    this.matchConfig = null; // back offline — the scoreboard/results no longer apply
+  }
+
+  // ── networked match end / results (multiplayer-plan §4) ──────────────────────
+
+  /** True once the server signalled the networked match ended — the results screen takes over.
+   *  Offline single-player never sets it, so the SP flow (gameover/intermission) is untouched. */
+  pollMatchEnd(): boolean {
+    return this.isNetworked && this.lobby.matchEnded !== null;
+  }
+
+  /** Show the post-match results: build the final-standings view from the server's authoritative
+   *  results + this client's own marine id (to highlight "you"), then clear the consumed lobby
+   *  signals so a rematch's NEW matchStarting is detected cleanly. */
+  beginResults(): void {
+    const r = this.lobby.matchEnded;
+    if (!r) return;
+    const state: ScoreState = {
+      mode: r.mode,
+      fragLimit: r.fragLimit,
+      timeLimit: r.timeLimit,
+      timeRemaining: 0,
+      players: r.scores.map((s) => ({ id: s.id, name: s.name, color: s.color, frags: s.frags, deaths: s.deaths })),
+      localPlayerId: String(this.session.world.localPlayerId),
+    };
+    this.results.start(state);
+    this.lobby.matchEnded = null;
+    this.lobby.matchStarting = null; // only a NEW start (a rematch) should re-enter the match
+  }
+
+  updateResults(input: MenuInput): ResultsAction | null {
+    return this.results.update(input);
+  }
+
+  renderResults(ctx2d: CanvasRenderingContext2D): void {
+    this.results.draw(ctx2d, this.ctx.config.internalWidth, this.ctx.config.internalHeight);
+  }
+
+  /** REMATCH: ask the server to restart with the same config (host-only server-side). Every
+   *  client — host and joiners — then re-enters via the fresh matchStarting (pollRematchStart). */
+  requestRematch(): void {
+    this.lobby.rematch();
+  }
+
+  /** A host-triggered rematch re-broadcast matchStarting; consume it and hand the config/level
+   *  back so the state machine drops back into networked PLAYING. Null until it arrives. */
+  pollRematchStart(): { config: MatchConfig; levelId: string } | null {
+    const ms = this.lobby.matchStarting;
+    if (!ms) return null;
+    this.lobby.matchStarting = null;
+    return { config: ms.config, levelId: ms.levelId };
   }
 
   beginIntermission(): void {
@@ -247,8 +323,9 @@ export class GameClient {
       if (input.wasPressed(`weapon${n}` as Action)) weaponSlot = n;
     }
 
-    // Automap toggle (edge): a presentation-only view state, read here per frame.
-    if (input.wasPressed('automap')) this.automapOn = !this.automapOn;
+    // Automap toggle (edge) — offline only. In a networked match Tab is the held-to-show
+    // scoreboard (renderWorld reads it held), so it must not also toggle the automap.
+    if (!this.isNetworked && input.wasPressed('automap')) this.automapOn = !this.automapOn;
 
     let lookTurn = 0;
     if (input.pointerLocked && input.mouseDX !== 0) {
@@ -351,6 +428,21 @@ export class GameClient {
       });
     }
     this.hud.composite(renderer, world);
+
+    // Tab-to-show scoreboard during a networked match (multiplayer-plan §4): DM frag table,
+    // or the co-op roster with frags N/A. Drawn last so it overlays the world + HUD.
+    if (this.isNetworked && this.ctx.input.isDown('automap')) {
+      const score = this.scoreState();
+      if (score) drawScoreboard(ctx2d, this.cache, score, config.internalWidth, config.internalHeight);
+    }
+  }
+
+  /** The live score view for the scoreboard (mode + limits from the match config, frags/deaths
+   *  + clock from the session's latest snapshot). Null offline or before the first snapshot. */
+  private scoreState(): ScoreState | null {
+    const cfg = this.matchConfig;
+    if (!cfg || !this.session.scoreState) return null;
+    return this.session.scoreState({ mode: cfg.mode, fragLimit: cfg.fragLimit, timeLimit: cfg.timeLimit });
   }
 
   /**

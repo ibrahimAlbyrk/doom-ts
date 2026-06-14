@@ -28,11 +28,19 @@ export function monsterTypeOf(world: IWorld, e: Entity): MonsterType | null {
 }
 
 /** Live entities a `sourceFaction` attack may hit — the opposing faction(s). A
- *  monster's attack may hit ANY live player (co-op friendly fire is gated elsewhere). */
-export function collectAttackTargets(world: IWorld, sourceFaction: Faction): Entity[] {
+ *  monster's attack may hit ANY live player. A PLAYER's attack hits monsters, plus
+ *  OTHER players only when friendly fire is on — deathmatch (multiplayer-plan §4):
+ *  without this a marine's hitscan collects no players and DM shots never register.
+ *  `sourceId` excludes the shooter from its own shot (it sits at the ray origin);
+ *  single-player is a size-1 map so the lone marine is excluded and the result is
+ *  byte-identical. Co-op leaves FF off, so players stay uncollected exactly as before. */
+export function collectAttackTargets(world: IWorld, sourceFaction: Faction, sourceId?: number): Entity[] {
   const out: Entity[] = [];
-  if (sourceFaction !== 'player') {
-    for (const p of world.players.values()) if (isAlivePlayer(p)) out.push(p);
+  if (sourceFaction !== 'player' || world.friendlyFire) {
+    for (const p of world.players.values()) {
+      if (sourceFaction === 'player' && p.id === sourceId) continue; // never autoaim/hit yourself
+      if (isAlivePlayer(p)) out.push(p);
+    }
   }
   if (sourceFaction !== 'monster') {
     for (const m of world.monsters) if (isAliveMonster(m)) out.push(m);

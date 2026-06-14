@@ -54,9 +54,24 @@ export interface TicCommand {
   pause: boolean;
   /** Monotonic per-player command sequence (client→server reconciliation, P3a). */
   seq: number;
+  /** The (fractional) authoritative tick the client was RENDERING remote players at when
+   *  it issued this command — its interpolation view-time. The server rewinds other marines
+   *  to it for fair hitscan lag-compensation (deathmatch, multiplayer-plan §5 / [netcode §5.6]).
+   *  Undefined offline / before the first snapshot — the server then skips the rewind. */
+  viewTick?: number;
 }
 
 export type TicResult = 'continue' | 'exit' | 'dead';
+
+/** Hitscan lag-compensation hook (deathmatch, server-only). The authority implements it
+ *  (it owns the position history + the world); the sim calls `rewind` just before a marine's
+ *  weapon resolves — moving the OTHER marines back to where the shooter saw them — and
+ *  `restore` immediately after, so only that shot sees the rewound world. Never used offline
+ *  (single-player `tic()` passes none), so prediction/replay stay byte-identical. */
+export interface LagCompensator {
+  rewind(shooterId: number, cmd: TicCommand): void;
+  restore(): void;
+}
 
 /** Options for a session instance. `presentation` true = a client-driven sim (emits
  *  cosmetic SFX events for local audio); false = the headless server (gameplay events
@@ -285,7 +300,7 @@ export class GameSession {
    * inputs land before AI/projectiles/doors/items resolve. Dead marines idle (no
    * respawn in P2). Returns whether any player tripped a level exit.
    */
-  stepNetwork(commands: Map<number, TicCommand>): { exit: boolean } {
+  stepNetwork(commands: Map<number, TicCommand>, lagComp?: LagCompensator): { exit: boolean } {
     const level = this.level;
     if (!level || !this.ai || !this.combatBus) return { exit: false };
 
@@ -294,7 +309,7 @@ export class GameSession {
       const weapons = this.weapons.get(id);
       if (!player || !weapons || player.health <= 0) continue;
       this.processedSeqByPlayer.set(id, cmd.seq);
-      this.applyPlayerInput(player, weapons, cmd);
+      this.applyPlayerInput(player, weapons, cmd, lagComp);
     }
     this.simulateWorld();
 
@@ -308,8 +323,10 @@ export class GameSession {
   // ── one player's command + the shared world step ───────────────────────────
 
   /** Apply ONE marine's command: turn (keyboard + folded mouse-look), movement thrust
-   *  with wall-slide collision, use, fire + weapon switching, then advance its weapon. */
-  private applyPlayerInput(p: Player, weapons: WeaponSystem, cmd: TicCommand): void {
+   *  with wall-slide collision, use, fire + weapon switching, then advance its weapon.
+   *  `lagComp` (server deathmatch only) rewinds the OTHER marines to the shooter's view-time
+   *  around the weapon step, so a hitscan registers where the shooter saw its target. */
+  private applyPlayerInput(p: Player, weapons: WeaponSystem, cmd: TicCommand, lagComp?: LagCompensator): void {
     const T = TICS_PER_STEP;
 
     // Turn + thrust + wall-slide — the SAME pure step the online client predicts/replays,
@@ -325,9 +342,12 @@ export class GameSession {
     else if (cmd.weaponCycle < 0) weapons.prevWeapon();
 
     // weapons.update fires hitscan/melee/projectile + emits weapon:fired → ai.noise; the
-    // active marine is tracked so that noise originates at the shooter, not always p0.
+    // active marine is tracked so that noise originates at the shooter, not always p0. The
+    // lag-comp rewind brackets ONLY this call so the rest of the step uses live positions.
     this.activePlayer = p;
+    lagComp?.rewind(p.id, cmd);
     weapons.update(T);
+    lagComp?.restore();
     this.activePlayer = null;
   }
 

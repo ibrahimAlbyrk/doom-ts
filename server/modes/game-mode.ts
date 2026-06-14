@@ -11,6 +11,7 @@ import type { GameSession } from '../../src/game/session';
 import type { GameMode as GameModeId, MatchConfig } from '../../src/lobby/protocol';
 import type { SpawnPose } from '../../src/levels';
 import { CoopMode } from './coop';
+import { DeathmatchMode } from './deathmatch';
 
 export type { SpawnPose } from '../../src/levels';
 
@@ -25,8 +26,24 @@ export interface ModeContext {
   readonly playerCount: number;
 }
 
-/** What the room should do when a player trips the level exit. */
-export type LevelOutcome = 'advance' | 'victory';
+/** What the room should do when a player trips the level exit. Deathmatch returns 'stay' —
+ *  the arena has no exit, so an exit a marine stumbles onto is ignored and the match runs on. */
+export type LevelOutcome = 'advance' | 'victory' | 'stay';
+
+/** A mode that keeps a per-player frag tally (deathmatch). Split off the base GameMode so co-op
+ *  isn't forced to implement frag scoring (ISP): the room reads scores through `isScoreKeeper`,
+ *  feeding the snapshot's per-player frags/deaths + the match clock + the post-match results. */
+export interface ScoreKeeper {
+  /** Running frags/deaths for a sim player id (zeroed entry for an unseen id). */
+  scoreFor(playerId: number): { frags: number; deaths: number };
+  /** Seconds left when a time limit is set; 0 when there is none (multiplayer-plan §4). */
+  readonly timeRemainingSec: number;
+}
+
+/** Does this mode keep frag scores? (deathmatch yes, co-op no.) */
+export function isScoreKeeper(mode: GameMode): mode is GameMode & ScoreKeeper {
+  return typeof (mode as Partial<ScoreKeeper>).scoreFor === 'function';
+}
 
 export interface GameMode {
   readonly id: GameModeId;
@@ -52,12 +69,8 @@ export interface GameMode {
   onLevelExit(ctx: ModeContext): LevelOutcome;
 }
 
-/** Build the GameMode for a match's config. Co-op is implemented here; deathmatch RULES land
- *  in P5 — until then a DM-configured room runs co-op rules so selecting it never crashes the
- *  lobby. P5 replaces this branch with `new DeathmatchMode(config)`. */
+/** Build the GameMode for a match's config: deathmatch (FF on, frag scoring, DM spawns,
+ *  respawn-on-death, frag/time limit) or co-op (FF off, shared monsters + progression). */
 export function createGameMode(config: MatchConfig): GameMode {
-  if (config.mode === 'deathmatch') {
-    console.warn('[mode] deathmatch rules land in P5 — running co-op rules for now');
-  }
-  return new CoopMode();
+  return config.mode === 'deathmatch' ? new DeathmatchMode(config) : new CoopMode();
 }

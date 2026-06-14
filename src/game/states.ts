@@ -178,6 +178,12 @@ class PlayingState extends BaseState {
       return;
     }
     const result = this.session.tic(cmd);
+    // Networked match end (deathmatch frag/time limit, or co-op episode complete) → results
+    // screen. Checked before the SP outcomes, which only fire for the offline LocalSession.
+    if (this.session.pollMatchEnd()) {
+      this.ctx.transition('mpResults');
+      return;
+    }
     if (result === 'dead') {
       this.ctx.transition('gameover');
     } else if (result === 'exit') {
@@ -187,6 +193,36 @@ class PlayingState extends BaseState {
 
   render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
     this.session.renderWorld(ctx2d, alpha);
+  }
+}
+
+/** Post-match deathmatch results: the winner banner + final frag table + REMATCH/LEAVE.
+ *  REMATCH waits for the host's restart (a fresh matchStarting re-enters PLAYING); LEAVE
+ *  tears the match down and returns to the title (multiplayer-plan §4). */
+class MpResultsState extends BaseState {
+  readonly id = 'mpResults' as const;
+  override onEnter(ctx: GameContext): void {
+    super.onEnter(ctx);
+    this.session.beginResults();
+  }
+  override update(): void {
+    // A host rematch re-seeded the match server-side (fresh matchStarting) → re-enter PLAYING.
+    const restart = this.session.pollRematchStart();
+    if (restart) {
+      this.session.startNetworkedMatch(restart.config, restart.levelId);
+      this.ctx.transition('playing');
+      return;
+    }
+    const action = this.session.updateResults(readMenuInput(this.ctx.input));
+    if (action === 'rematch') {
+      this.session.requestRematch(); // host restarts the match; joiners just follow the restart
+    } else if (action === 'leave') {
+      this.session.teardownLevel();
+      this.ctx.transition('title');
+    }
+  }
+  render(ctx2d: CanvasRenderingContext2D): void {
+    this.session.renderResults(ctx2d);
   }
 }
 
@@ -286,5 +322,6 @@ export function createStates(session: GameClient): Record<GameStateId, IGameStat
     gameover: new GameoverState(session),
     victory: new VictoryState(session),
     credits: new CreditsState(session),
+    mpResults: new MpResultsState(session),
   };
 }

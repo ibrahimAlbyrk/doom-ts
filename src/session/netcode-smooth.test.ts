@@ -73,6 +73,8 @@ function partA(): void {
         isFiring: (id) => sim.isFiring(id),
         processedSeq: (id) => sim.processedSeqFor(id),
         metaFor: () => ({ sid: 'A', name: 'A', color: 0 }),
+        scoreFor: () => ({ frags: 0, deaths: 0 }),
+        timeRemaining: 0,
       });
       snapQueue.push({ at: vnow + LAT, snap });
     }
@@ -131,13 +133,13 @@ const NO_KEYS = {
 function psnap(id: number, sid: string, x: number, y: number): PlayerSnap {
   return {
     id, sid, name: sid, color: 0, x, y, angle: 0, vx: 0, vy: 0, health: 100, armor: 0,
-    armorFactor: 0, weapon: 'pistol', state: 'walk', bob: 0, seq: 0,
+    armorFactor: 0, weapon: 'pistol', state: 'walk', bob: 0, seq: 0, frags: 0, deaths: 0,
     ammo: { ...NO_AMMO }, ammoMax: { ...NO_AMMO }, weapons: { ...OWN_WEAPONS }, keys: { ...NO_KEYS },
     backpack: false, powerups: {},
   };
 }
 function snapshot(tick: number, players: PlayerSnap[]): Snapshot {
-  return { tick, mode: 'coop', level: 'E1M1', players, monsters: [], projectiles: [], pickups: [], doors: [], lifts: [], sounds: [] };
+  return { tick, mode: 'coop', level: 'E1M1', players, monsters: [], projectiles: [], pickups: [], doors: [], lifts: [], sounds: [], timeRemaining: 0 };
 }
 
 function partB(): void {

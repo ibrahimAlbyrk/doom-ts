@@ -20,7 +20,8 @@ import { World, createPlayer } from '../entities';
 import { LevelRuntime } from '../world';
 import { mapDataFor } from '../levels';
 import { applyPlayerMovement } from '../game/player-movement';
-import type { Session, SimStats, TicCommand, TicResult } from './session';
+import type { PlayerScore, ScoreState } from '../score';
+import type { ScoreMeta, Session, SimStats, TicCommand, TicResult } from './session';
 import {
   applySnapshot,
   applyPlayerInventory,
@@ -102,6 +103,10 @@ export class RemoteSession implements Session {
   /** Positional SFX from the latest snapshots, drained by the presenter each frame and
    *  played relative to the local marine (networked co-op SFX, multiplayer-plan §4). */
   private soundQueue: NetSound[] = [];
+  /** Latest per-player frags/deaths from the snapshot (the Tab scoreboard reads this). */
+  private latestScores: PlayerScore[] = [];
+  /** Deathmatch seconds left from the latest snapshot (0 when no time limit / co-op). */
+  private latestTimeRemaining = 0;
   /** Clock for the interpolation buffer (injectable so tests drive a virtual time). */
   private readonly now: () => number;
 
@@ -132,6 +137,8 @@ export class RemoteSession implements Session {
     this.smoothY = 0;
     this.fireView = 0;
     this.soundQueue = [];
+    this.latestScores = [];
+    this.latestTimeRemaining = 0;
     this.transport.onSnapshot((s) => this.onSnapshot(s as Snapshot));
     this.transport.onEvent((e) => this.onEvent(e));
     void this.transport.connect();
@@ -221,6 +228,9 @@ export class RemoteSession implements Session {
    *  immediately (no round-trip wait) and INTERPOLATE every remote entity ~100ms in the
    *  past. Reconciliation against the authoritative state happens on snapshot receipt. */
   tic(cmd: TicCommand): TicResult {
+    // Stamp the command with the authoritative tick we're currently rendering remotes at, so the
+    // server can rewind them to it for fair hitscan lag-comp (deathmatch, multiplayer-plan §5).
+    cmd.viewTick = this.currentViewTick();
     this.transport.sendCommand(cmd);
     if (this.level && this.localResolved) {
       this.predict(cmd);
@@ -318,6 +328,37 @@ export class RemoteSession implements Session {
     interpolateRemotes(this.world, this.level, a.snap, b.snap, t, this.world.localPlayerId, this.avatarMeta);
   }
 
+  /** The (fractional) authoritative tick the local client is rendering remotes at right now —
+   *  the same `now − INTERP_DELAY` bracket interpolate() draws — expressed in server ticks, so
+   *  the server can rewind to it for lag-comp. -1 before any snapshot (server then skips rewind). */
+  private currentViewTick(): number {
+    if (this.snapBuf.length === 0) return -1;
+    const target = this.now() - NETCODE.INTERP_DELAY_MS;
+    let aIdx = 0;
+    for (let i = 0; i < this.snapBuf.length; i++) {
+      if (this.snapBuf[i]!.recv <= target) aIdx = i;
+    }
+    const a = this.snapBuf[aIdx]!;
+    const b = this.snapBuf[Math.min(aIdx + 1, this.snapBuf.length - 1)]!;
+    const span = b.recv - a.recv;
+    const t = span > 0 ? Math.min(1, Math.max(0, (target - a.recv) / span)) : 0;
+    return a.snap.tick + (b.snap.tick - a.snap.tick) * t;
+  }
+
+  /** The score view for the Tab scoreboard / results — the latest snapshot's per-player frags +
+   *  deaths and the match clock, joined with the config's mode + limits. Null before any snapshot. */
+  scoreState(meta: ScoreMeta): ScoreState | null {
+    if (this.latestScores.length === 0) return null;
+    return {
+      mode: meta.mode,
+      fragLimit: meta.fragLimit,
+      timeLimit: meta.timeLimit,
+      timeRemaining: this.latestTimeRemaining,
+      players: this.latestScores,
+      localPlayerId: String(this.world.localPlayerId),
+    };
+  }
+
   /** Seed the predicted local marine at its authoritative spawn the first time we resolve
    *  which marine is ours, so prediction starts from the right place with no offset. */
   private seedLocal(me: PlayerSnap): void {
@@ -367,6 +408,17 @@ export class RemoteSession implements Session {
     // buffer + reconciliation must only ever move forward in server time.
     if (snap.tick <= this.lastSnapTick) return;
     this.lastSnapTick = snap.tick;
+
+    // Latest authoritative scores for the Tab scoreboard / results (frags/deaths per marine +
+    // the match clock). Built straight off the snapshot so the UI never disagrees with the sim.
+    this.latestScores = snap.players.map((p) => ({
+      id: String(p.id),
+      name: p.name,
+      color: p.color,
+      frags: p.frags,
+      deaths: p.deaths,
+    }));
+    this.latestTimeRemaining = snap.timeRemaining;
 
     // Co-op shared progression: the server advanced the whole party to the next level. Reload
     // it locally (geometry the renderer/HUD need) before applying this snapshot's entities.

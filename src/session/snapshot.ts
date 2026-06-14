@@ -68,6 +68,8 @@ export interface PlayerSnap {
   state: AvatarState;
   bob: number; // walk-bob phase (local eye/weapon bob)
   seq: number; // last command seq the server applied for this player (P3a)
+  frags: number; // deathmatch kills scored (multiplayer-plan §4); 0 in co-op
+  deaths: number; // deathmatch times fragged; 0 in co-op
   // Full per-player inventory so each client's OWN status bar is exact (multiplayer-plan §4):
   // every ammo type + its max (backpack doubles maxes), all weapons owned (ARMS panel),
   // keys held, and active powerups (mugshot god-face + screen tints). Each client reads its
@@ -116,6 +118,7 @@ export interface Snapshot {
   doors: number[]; // open amount (0..1) per level door, in MapData order
   lifts: number[]; // floor tier (map units) per level lift, in MapData order
   sounds: NetSound[]; // positional SFX fired this network tick, played by every client
+  timeRemaining: number; // deathmatch seconds left when a time limit is set; 0 otherwise
 }
 
 /** What the server threads in to stamp a snapshot with per-player metadata it owns
@@ -126,6 +129,10 @@ export interface SnapshotMeta {
   isFiring: (id: number) => boolean;
   processedSeq: (id: number) => number;
   metaFor: (id: number) => { sid: string; name: string; color: number };
+  /** Per-player deathmatch frags/deaths (zeroed in co-op). */
+  scoreFor: (id: number) => { frags: number; deaths: number };
+  /** Deathmatch seconds left (0 when no time limit / co-op). */
+  timeRemaining: number;
 }
 
 /** Marine intent for the avatar: dead → firing → walking → idle (velocity-thresholded). */
@@ -140,6 +147,7 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
   const players: PlayerSnap[] = [];
   for (const p of world.players.values()) {
     const meta = m.metaFor(p.id);
+    const score = m.scoreFor(p.id);
     const inv = p.inventory;
     players.push({
       id: p.id,
@@ -158,6 +166,8 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
       state: avatarStateOf(p, m.isFiring(p.id)),
       bob: p.bob,
       seq: m.processedSeq(p.id),
+      frags: score.frags,
+      deaths: score.deaths,
       ammo: { ...inv.ammo },
       ammoMax: { ...inv.ammoMax },
       weapons: { ...inv.weapons },
@@ -207,6 +217,7 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
     doors: level.data.doors.map((_d, i) => doorOpen(level, i)),
     lifts: level.data.lifts.map((_l, i) => liftHeight(level, i)),
     sounds: [], // the room fills this from its sound collector after buildSnapshot
+    timeRemaining: m.timeRemaining,
   };
 }
 

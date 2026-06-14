@@ -50,7 +50,10 @@ export function drawFragTable(
     ctx.globalAlpha = isLocal ? 1 : 0.78;
     if (isLocal) drawText(ctx, cache, HUD_FONT, '>', colX(COL.name) - 9 * scale, y, { scale });
     drawText(ctx, cache, HUD_FONT, p.name, nameX, y, { scale });
-    drawText(ctx, cache, HUD_FONT, String(p.frags), colX(COL.frags), y, { scale, align: 'right' });
+    // Co-op has no frags — the column reads N/A there (multiplayer-plan §4: scoreboard shown in
+    // co-op too, frags hidden); deathmatch shows the live frag count.
+    const fragText = state.mode === 'coop' ? '--' : String(p.frags);
+    drawText(ctx, cache, HUD_FONT, fragText, colX(COL.frags), y, { scale, align: 'right' });
     drawText(ctx, cache, HUD_FONT, String(p.deaths), colX(COL.deaths), y, { scale, align: 'right' });
     drawText(ctx, cache, HUD_FONT, p.ping === undefined ? '--' : String(p.ping), colX(COL.ping), y, {
       scale,
@@ -65,6 +68,7 @@ export function drawFragTable(
 /** The match-limit / clock line: "FRAG LIMIT 20" + remaining time when a time limit is
  *  set. Empty string for the unlimited case is skipped by the caller's measure. */
 function limitsLine(state: ScoreState): string {
+  if (state.mode === 'coop') return ''; // co-op has no frag/time limit line
   const parts: string[] = [];
   if (state.fragLimit > 0) parts.push(`FRAG LIMIT ${state.fragLimit}`);
   if (state.timeLimit > 0) parts.push(clockString(state.timeRemaining));
@@ -97,7 +101,10 @@ export function drawScoreboard(
   ctx.lineWidth = scale;
   ctx.strokeRect(panelX + scale, panelY + scale, panelW - 2 * scale, panelH - 2 * scale);
 
-  drawText(ctx, cache, HUD_FONT, 'DEATHMATCH', w / 2, panelY + 8 * scale, { scale: scale * 2, align: 'center' });
+  drawText(ctx, cache, HUD_FONT, state.mode === 'coop' ? 'CO-OP' : 'DEATHMATCH', w / 2, panelY + 8 * scale, {
+    scale: scale * 2,
+    align: 'center',
+  });
   drawText(ctx, cache, HUD_FONT, limitsLine(state), w / 2, panelY + 28 * scale, { scale, align: 'center' });
 
   drawFragTable(ctx, cache, state, panelX + 12 * scale, panelY + 44 * scale, panelW - 24 * scale, scale);

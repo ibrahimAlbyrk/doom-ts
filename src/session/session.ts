@@ -11,10 +11,19 @@
 import type { IWorld, ILevelRuntime, MapData, SkillId } from '../core';
 import type { CombatBus } from '../combat';
 import type { WeaponView } from '../weapons';
+import type { GameMode } from '../lobby';
+import type { ScoreState } from '../score';
 import type { TicCommand, TicResult } from '../game/session';
 import type { NetSound, RemoteAvatar } from './snapshot';
 
 export type { TicCommand, TicResult } from '../game/session';
+
+/** The match meta the score view needs that lives in the lobby config, not the snapshot. */
+export interface ScoreMeta {
+  mode: GameMode;
+  fragLimit: number;
+  timeLimit: number;
+}
 
 /** Per-level progress counters the intermission tally reads. */
 export interface SimStats {
@@ -67,4 +76,9 @@ export interface Session {
    *  played relative to the local marine. Offline LocalSession omits it — solo SFX play
    *  straight off the in-process event bus. */
   takeSounds?(): NetSound[];
+
+  /** ONLINE only: the score view for the Tab scoreboard, built from the latest snapshot's
+   *  per-player frags/deaths + the match clock + the config's limits. Null before the first
+   *  snapshot. Offline LocalSession omits it — single-player has no scoreboard. */
+  scoreState?(meta: ScoreMeta): ScoreState | null;
 }

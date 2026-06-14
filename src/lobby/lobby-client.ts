@@ -19,6 +19,7 @@ import type {
   LobbyPlayer,
   LobbyTransport,
   MatchConfig,
+  MatchResults,
   RoomState,
   ServerMessage,
 } from './protocol';
@@ -42,6 +43,9 @@ export class LobbyClient {
   localPlayerId: string | null = null;
   rejectReason: string | null = null;
   matchStarting: MatchStarting | null = null;
+  /** Final standings from the last `matchEnded`; the integration shows the results screen on
+   *  it and clears it once consumed (multiplayer-plan §4). Null until a match ends. */
+  matchEnded: MatchResults | null = null;
 
   private readonly changeListeners = new Set<() => void>();
 
@@ -87,6 +91,12 @@ export class LobbyClient {
   start(): void {
     if (!this.canStart) return;
     this.send({ t: 'startMatch' });
+  }
+
+  /** Post-match: ask the server to restart the match with the same config (host-only on the
+   *  server; a non-host's request is ignored, it just follows the host's next matchStarting). */
+  rematch(): void {
+    this.send({ t: 'rematch' });
   }
 
   /** Leave the room and return to the idle (menu) phase. */
@@ -147,6 +157,10 @@ export class LobbyClient {
         if (this.room) this.room = { ...this.room, status: 'starting' };
         break;
       case 'matchEnded':
+        // The match reached its win condition; surface the final standings so the integration
+        // can show the results screen (it clears this once consumed).
+        this.matchEnded = msg.results;
+        break;
       case 'playerJoined':
       case 'playerLeft':
         // Roster deltas are already reflected in the synced roomState; nothing extra
@@ -166,6 +180,7 @@ export class LobbyClient {
     this.localPlayerId = null;
     this.rejectReason = null;
     this.matchStarting = null;
+    this.matchEnded = null;
   }
 
   private emit(): void {

@@ -31,11 +31,12 @@ export function autoaimTarget(
   angle: number,
   range: number,
   sourceFaction: Faction,
+  sourceId?: number,
 ): Entity | null {
   const level = world.level;
   let best: Entity | null = null;
   let bestDist = Infinity;
-  for (const e of collectAttackTargets(world, sourceFaction)) {
+  for (const e of collectAttackTargets(world, sourceFaction, sourceId)) {
     const ex = e.x - x;
     const ey = e.y - y;
     const dist = Math.hypot(ex, ey);
@@ -70,14 +71,14 @@ export function hitscan(
   rng: Rng,
   events?: CombatBus,
 ): void {
-  const aim = autoaimTarget(world, x, y, angle, range, sourceFaction);
+  const aim = autoaimTarget(world, x, y, angle, range, sourceFaction, sourceId);
   const baseAngle = aim ? Math.atan2(aim.y - y, aim.x - x) : angle;
   const origin = { x, y };
 
   for (let i = 0; i < pellets; i++) {
     const accurate = i === 0 && firstShotAccurate;
     const a = !accurate && spreadShift > 0 ? baseAngle + spreadAngle(rng, spreadShift) : baseAngle;
-    const hit = rayFirstTarget(world, x, y, a, range, sourceFaction);
+    const hit = rayFirstTarget(world, x, y, a, range, sourceFaction, sourceId);
     if (hit) {
       applyDamage(world, hit, rollDamage(rng, damage.n, damage.m), sourceId, sourceFaction, rng, events, origin);
     }
@@ -92,6 +93,7 @@ function rayFirstTarget(
   angle: number,
   range: number,
   sourceFaction: Faction,
+  sourceId?: number,
 ): Entity | null {
   const dx = Math.cos(angle);
   const dy = Math.sin(angle);
@@ -99,7 +101,7 @@ function rayFirstTarget(
   const maxD = Math.min(range, wallD);
   let best: Entity | null = null;
   let bestT = Infinity;
-  for (const e of collectAttackTargets(world, sourceFaction)) {
+  for (const e of collectAttackTargets(world, sourceFaction, sourceId)) {
     const t = rayCircleHit(x, y, dx, dy, e.x, e.y, e.radius, maxD);
     if (t >= 0 && t < bestT) {
       bestT = t;

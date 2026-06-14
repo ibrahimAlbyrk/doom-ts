@@ -64,9 +64,25 @@ export interface RoomState {
   players: LobbyPlayer[];
 }
 
-/** Post-match results placeholder — the DM frag table / co-op tally lands in P4/P5. */
+/** One competitor's final standing in the post-match results (multiplayer-plan §4). Mirrors
+ *  src/score PlayerScore by shape but is declared here so the protocol carries no dependency on
+ *  the client score/UI module (the client maps it straight onto a PlayerScore). `id` is the sim
+ *  player id as a string — what the client highlights as "you" (its own sim id). */
+export interface ResultScore {
+  id: string;
+  name: string;
+  color: LobbyColorId;
+  frags: number;
+  deaths: number;
+}
+
+/** Post-match results: the mode + its limits + the final per-player table the results screen
+ *  draws (multiplayer-plan §4). For co-op the table carries the roster with zero frags. */
 export interface MatchResults {
   mode: GameMode;
+  fragLimit: number;
+  timeLimit: number;
+  scores: ResultScore[];
 }
 
 /** Client → server (multiplayer-plan §3.4). */

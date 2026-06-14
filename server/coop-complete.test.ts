@@ -134,6 +134,8 @@ function testFullStateSync(): void {
     isFiring: (id) => sim.isFiring(id),
     processedSeq: (id) => sim.processedSeqFor(id),
     metaFor: (id) => ({ sid: `S${id}`, name: `M${id}`, color: 0 }),
+    scoreFor: () => ({ frags: 0, deaths: 0 }),
+    timeRemaining: 0,
   });
   const ps = snap.players.find((p) => p.id === 0)!;
   ok(ps.ammo.cells === 123 && ps.ammoMax.cells === 600, 'snapshot carries every ammo type + max');
