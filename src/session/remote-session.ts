@@ -23,8 +23,10 @@ import { applyPlayerMovement } from '../game/player-movement';
 import type { Session, SimStats, TicCommand, TicResult } from './session';
 import {
   applySnapshot,
+  applyPlayerInventory,
   interpolateRemotes,
   type AvatarState,
+  type NetSound,
   type PlayerSnap,
   type RemoteAvatar,
   type Snapshot,
@@ -97,6 +99,9 @@ export class RemoteSession implements Session {
   private smoothY = 0;
   /** Ticks left showing the local gun's firing frame (predicted trigger feedback). */
   private fireView = 0;
+  /** Positional SFX from the latest snapshots, drained by the presenter each frame and
+   *  played relative to the local marine (networked co-op SFX, multiplayer-plan §4). */
+  private soundQueue: NetSound[] = [];
   /** Clock for the interpolation buffer (injectable so tests drive a virtual time). */
   private readonly now: () => number;
 
@@ -126,9 +131,27 @@ export class RemoteSession implements Session {
     this.smoothX = 0;
     this.smoothY = 0;
     this.fireView = 0;
+    this.soundQueue = [];
     this.transport.onSnapshot((s) => this.onSnapshot(s as Snapshot));
     this.transport.onEvent((e) => this.onEvent(e));
     void this.transport.connect();
+  }
+
+  /** Swap to a new level mid-match (co-op exit advanced the party). Loads the geometry the
+   *  renderer/HUD need and resets the prediction/interpolation buffers; the local marine's
+   *  identity is kept and the next snapshot snaps it to the new spawn (a >1-cell correction,
+   *  so reconciliation hard-snaps rather than rubber-bands). Server time keeps advancing, so
+   *  lastSnapTick is NOT reset — the level-change snapshot's tick is already the newest. */
+  private loadLevelLocally(levelId: string): void {
+    const data = mapDataFor(levelId);
+    if (!data) return;
+    this.levelData = data;
+    this.level = new LevelRuntime(data);
+    this.world.level = this.level;
+    this.snapBuf.length = 0;
+    this.pending = [];
+    this.smoothX = 0;
+    this.smoothY = 0;
   }
 
   // ── Session reads ──────────────────────────────────────────────────────────────
@@ -203,10 +226,20 @@ export class RemoteSession implements Session {
       this.predict(cmd);
       this.interpolate();
     }
+    // Co-op death is NOT game-over (D3 = respawn): a dead local marine stays in PLAYING and
+    // the server respawns it after a short delay, so we never transition to gameover here —
+    // only a whole-match end (matchOver) exits. The dead window just renders the world.
     if (this.matchOver) return 'exit';
-    const p = this.world.players.get(this.world.localPlayerId);
-    if (p && p.health <= 0) return 'dead';
     return 'continue';
+  }
+
+  /** Drain the positional SFX queued from the latest snapshots so the presenter can play
+   *  them relative to the local marine. Empty offline / when no snapshot has arrived. */
+  takeSounds(): NetSound[] {
+    if (this.soundQueue.length === 0) return [];
+    const out = this.soundQueue;
+    this.soundQueue = [];
+    return out;
   }
 
   /** Apply the local command to the predicted marine NOW (instant movement/turn), buffer it
@@ -248,10 +281,11 @@ export class RemoteSession implements Session {
     p.velX = me.vx;
     p.velY = me.vy;
     p.health = me.health;
-    p.armor.points = me.armor;
-    p.currentWeapon = me.weapon;
     p.bob = me.bob;
     p.active = me.health > 0;
+    // Mirror the full authoritative loadout so the local status bar (ammo/keys/weapon/armor)
+    // is exact — not just the position/health prediction owns.
+    applyPlayerInventory(p, me);
 
     this.pending = this.pending.filter((c) => c.seq > me.seq);
     for (const c of this.pending) applyPlayerMovement(p, this.level, c, TICS_PER_STEP);
@@ -298,8 +332,7 @@ export class RemoteSession implements Session {
     p.velX = me.vx;
     p.velY = me.vy;
     p.health = me.health;
-    p.armor.points = me.armor;
-    p.currentWeapon = me.weapon;
+    applyPlayerInventory(p, me);
     this.pending = [];
     this.smoothX = 0;
     this.smoothY = 0;
@@ -334,6 +367,20 @@ export class RemoteSession implements Session {
     // buffer + reconciliation must only ever move forward in server time.
     if (snap.tick <= this.lastSnapTick) return;
     this.lastSnapTick = snap.tick;
+
+    // Co-op shared progression: the server advanced the whole party to the next level. Reload
+    // it locally (geometry the renderer/HUD need) before applying this snapshot's entities.
+    if (snap.level && this.levelData && snap.level !== this.levelData.id) {
+      this.loadLevelLocally(snap.level);
+      if (!this.level) return;
+    }
+
+    // Queue this tick's positional SFX for the presenter to play relative to the local marine.
+    if (snap.sounds.length > 0) {
+      for (const s of snap.sounds) this.soundQueue.push(s);
+      const overflow = this.soundQueue.length - NETCODE.SOUND_QUEUE_MAX;
+      if (overflow > 0) this.soundQueue.splice(0, overflow);
+    }
 
     // Resolve which marine is ME (sessionId travels on every PlayerSnap); seed the predicted
     // local marine from its authoritative spawn the first time we find it.

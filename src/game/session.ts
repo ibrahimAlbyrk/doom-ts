@@ -143,6 +143,13 @@ export class GameSession {
   isFiring(playerId: number): boolean {
     return this.weapons.get(playerId)?.firing ?? false;
   }
+
+  /** The marine whose command is being applied right now (set around weapons.update), or
+   *  null outside a player step. The server reads it synchronously inside its weapon:fired
+   *  handler to position that marine's gunshot for networked SFX (multiplayer-plan §4). */
+  get firingPlayerPos(): { x: number; y: number } | null {
+    return this.activePlayer ? { x: this.activePlayer.x, y: this.activePlayer.y } : null;
+  }
   /** Per-level progress counters for the intermission tally (presenter builds the UI). */
   stats(): {
     kills: number;
@@ -214,6 +221,19 @@ export class GameSession {
   registerPlayer(playerId: number): void {
     if (!this.level || !this.combatBus || this.weapons.has(playerId)) return;
     this.weapons.set(playerId, new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus, playerId));
+  }
+
+  /** Respawn a dead co-op marine in place: replace its entity with a FRESH loadout
+   *  (createPlayer defaults — full health, pistol + fist, 50 bullets) at the given spawn,
+   *  keeping its id, and rebuild its weapon system so the gun state is clean. Server-only:
+   *  the GameMode calls this when a respawn timer elapses (multiplayer-plan §4 / D3=respawn).
+   *  Monsters/level state are untouched, so the rest of the match continues uninterrupted. */
+  respawnPlayer(playerId: number, spawn: { x: number; y: number; angle: number }): void {
+    if (!this.level || !this.combatBus) return;
+    this.ctx.world.players.set(playerId, createPlayer(playerId, spawn.x, spawn.y, spawn.angle));
+    this.weapons.get(playerId)?.dispose();
+    this.weapons.set(playerId, new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus, playerId));
+    this.processedSeqByPlayer.set(playerId, this.processedSeqByPlayer.get(playerId) ?? -1);
   }
 
   /** Compute next level after the just-finished one: load it, or signal victory. */

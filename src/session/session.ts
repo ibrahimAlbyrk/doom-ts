@@ -12,7 +12,7 @@ import type { IWorld, ILevelRuntime, MapData, SkillId } from '../core';
 import type { CombatBus } from '../combat';
 import type { WeaponView } from '../weapons';
 import type { TicCommand, TicResult } from '../game/session';
-import type { RemoteAvatar } from './snapshot';
+import type { NetSound, RemoteAvatar } from './snapshot';
 
 export type { TicCommand, TicResult } from '../game/session';
 
@@ -62,4 +62,9 @@ export interface Session {
    *  frame (the local player stays first-person). Offline LocalSession omits it — a
    *  single-player world has no other players to render. */
   remotePlayers?(): RemoteAvatar[];
+
+  /** ONLINE only: positional SFX the latest snapshots carried, drained once per frame and
+   *  played relative to the local marine. Offline LocalSession omits it — solo SFX play
+   *  straight off the in-process event bus. */
+  takeSounds?(): NetSound[];
 }

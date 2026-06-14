@@ -26,6 +26,26 @@ function coopSpawnOffset(index: number): { dx: number; dy: number } {
   return ring[(index - 1) % ring.length]!;
 }
 
+/** A spawn pose (radians) — the entity convention loadLevel + respawn place players at. */
+export interface SpawnPose {
+  x: number;
+  y: number;
+  angle: number;
+}
+
+/** The co-op spawn pose for the marine at roster index `i`: the level's single playerStart
+ *  fanned out on a small ring so up to four marines don't telefrag (index 0 = on the spawn,
+ *  so offline single-player is exact). Shared by loadLevel (initial) and the server's co-op
+ *  mode (respawn), so spawn placement lives in ONE place (multiplayer-plan §3.6 / §4). */
+export function coopSpawnPoint(data: MapData, index: number): SpawnPose {
+  const off = coopSpawnOffset(index);
+  return {
+    x: data.playerStart.x + off.dx,
+    y: data.playerStart.y + off.dy,
+    angle: degToRad(data.playerStart.angle),
+  };
+}
+
 /** Does a thing's MTF skill bitmask include the chosen skill? A thing with no bit
  *  for any single-player skill (e.g. skill 0 / multiplayer-only) never spawns. */
 export function thingSpawnsAtSkill(mtf: number, skill: SkillId): boolean {
@@ -54,13 +74,12 @@ export function loadLevel(
   // Place EVERY player at the start (multiplayer-plan B1/§3.6): co-op spreads them in a
   // small ring around the single playerStart so they don't stack. The local/first player
   // (index 0) sits exactly on the spawn, so offline single-player is unchanged.
-  const angle = degToRad(data.playerStart.angle);
   let i = 0;
   for (const p of world.players.values()) {
-    const off = coopSpawnOffset(i++);
-    p.x = data.playerStart.x + off.dx;
-    p.y = data.playerStart.y + off.dy;
-    p.angle = angle;
+    const sp = coopSpawnPoint(data, i++);
+    p.x = sp.x;
+    p.y = sp.y;
+    p.angle = sp.angle;
     p.velX = 0;
     p.velY = 0;
     p.active = true;

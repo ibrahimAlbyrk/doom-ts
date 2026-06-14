@@ -8,9 +8,32 @@
 // / projectiles / pickups are rebuilt each apply (the client never simulates them, it just
 // renders the latest authoritative set). Door/lift dynamic state travels as compact arrays
 // aligned to the level's door/lift order (both sides load the same MapData).
-import type { IWorld, ILevelRuntime, Player, Projectile, MonsterType, MonsterAIState, WeaponId } from '../core';
+import type {
+  IWorld,
+  ILevelRuntime,
+  Player,
+  Projectile,
+  MonsterType,
+  MonsterAIState,
+  WeaponId,
+  AmmoType,
+  KeyColor,
+  PowerupKind,
+} from '../core';
 import type { GameMode } from '../lobby/protocol';
 import { createPlayer, createMonster, createPickup } from '../entities';
+
+/** One positional sound the authority fires this network tick — a fully-resolved DOOM
+ *  lump (`DS*`) plus its world origin + voice priority. The server collects these from the
+ *  sim (weapon fire, monster, pickup, door/lift, impact, player pain/death) and ships them
+ *  in the snapshot; each client plays them through its audio system relative to its OWN
+ *  marine, so co-op SFX are heard — and spatialised — on every client (multiplayer-plan §4). */
+export interface NetSound {
+  sound: string;
+  x: number;
+  y: number;
+  priority: number;
+}
 
 /** Marine animation intent the avatar renderer turns into a PLAY frame ([netcode §6]):
  *  sync STATE not frame indices, so each client drives its own animation clock. */
@@ -40,10 +63,21 @@ export interface PlayerSnap {
   vy: number;
   health: number;
   armor: number;
+  armorFactor: number; // 1/3 (green) vs 1/2 (blue) — the HUD's armor tint reads this
   weapon: WeaponId; // local first-person gun selection
   state: AvatarState;
   bob: number; // walk-bob phase (local eye/weapon bob)
   seq: number; // last command seq the server applied for this player (P3a)
+  // Full per-player inventory so each client's OWN status bar is exact (multiplayer-plan §4):
+  // every ammo type + its max (backpack doubles maxes), all weapons owned (ARMS panel),
+  // keys held, and active powerups (mugshot god-face + screen tints). Each client reads its
+  // own marine's block; remotes carry it too but only the local bar is drawn.
+  ammo: Record<AmmoType, number>;
+  ammoMax: Record<AmmoType, number>;
+  weapons: Record<WeaponId, boolean>;
+  keys: Record<KeyColor, { card: boolean; skull: boolean }>;
+  backpack: boolean;
+  powerups: Partial<Record<PowerupKind, number>>;
 }
 
 export interface MonsterSnap {
@@ -74,12 +108,14 @@ export interface PickupSnap {
 export interface Snapshot {
   tick: number;
   mode: GameMode;
+  level: string; // current level id — a client reloads its local level when this changes
   players: PlayerSnap[];
   monsters: MonsterSnap[];
   projectiles: ProjectileSnap[];
   pickups: PickupSnap[];
   doors: number[]; // open amount (0..1) per level door, in MapData order
   lifts: number[]; // floor tier (map units) per level lift, in MapData order
+  sounds: NetSound[]; // positional SFX fired this network tick, played by every client
 }
 
 /** What the server threads in to stamp a snapshot with per-player metadata it owns
@@ -104,6 +140,7 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
   const players: PlayerSnap[] = [];
   for (const p of world.players.values()) {
     const meta = m.metaFor(p.id);
+    const inv = p.inventory;
     players.push({
       id: p.id,
       sid: meta.sid,
@@ -116,10 +153,21 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
       vy: p.velY,
       health: p.health,
       armor: p.armor.points,
+      armorFactor: p.armor.factor,
       weapon: p.currentWeapon,
       state: avatarStateOf(p, m.isFiring(p.id)),
       bob: p.bob,
       seq: m.processedSeq(p.id),
+      ammo: { ...inv.ammo },
+      ammoMax: { ...inv.ammoMax },
+      weapons: { ...inv.weapons },
+      keys: {
+        blue: { ...inv.keys.blue },
+        yellow: { ...inv.keys.yellow },
+        red: { ...inv.keys.red },
+      },
+      backpack: inv.backpack,
+      powerups: { ...p.powerups },
     });
   }
 
@@ -151,13 +199,36 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
   return {
     tick: m.tick,
     mode: m.mode,
+    level: level.data.id,
     players,
     monsters,
     projectiles,
     pickups,
     doors: level.data.doors.map((_d, i) => doorOpen(level, i)),
     lifts: level.data.lifts.map((_l, i) => liftHeight(level, i)),
+    sounds: [], // the room fills this from its sound collector after buildSnapshot
   };
+}
+
+/** Mirror a player snapshot's FULL loadout onto a local Player so its status bar is exact:
+ *  armor (points + tier), current weapon, every ammo type + max, weapons owned, keys, and
+ *  active powerups. Used for the local marine (reconcile/seed/cold-mirror) so each client's
+ *  HUD reads correct values straight off its own player struct (multiplayer-plan §4). */
+export function applyPlayerInventory(p: Player, ps: PlayerSnap): void {
+  p.armor.points = ps.armor;
+  p.armor.factor = ps.armorFactor;
+  p.currentWeapon = ps.weapon;
+  const inv = p.inventory;
+  inv.ammo = { ...ps.ammo };
+  inv.ammoMax = { ...ps.ammoMax };
+  inv.weapons = { ...ps.weapons };
+  inv.keys = {
+    blue: { ...ps.keys.blue },
+    yellow: { ...ps.keys.yellow },
+    red: { ...ps.keys.red },
+  };
+  inv.backpack = ps.backpack;
+  p.powerups = { ...ps.powerups };
 }
 
 /** Mirror a snapshot into the client's local world + level (raw apply, P2). The local
@@ -175,12 +246,11 @@ export function applySnapshot(world: IWorld, level: ILevelRuntime, snap: Snapsho
     p.y = ps.y;
     p.angle = ps.angle;
     p.health = ps.health;
-    p.armor.points = ps.armor;
-    p.currentWeapon = ps.weapon;
     p.bob = ps.bob;
     p.active = ps.health > 0;
     p.velX = ps.vx;
     p.velY = ps.vy;
+    applyPlayerInventory(p, ps);
   }
   for (const id of [...world.players.keys()]) {
     if (!seen.has(id) && id !== world.localPlayerId) world.players.delete(id);

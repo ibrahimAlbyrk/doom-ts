@@ -7,7 +7,7 @@
 // entities IS the one representation, built by buildSnapshot server-side and applied by
 // the client — no second schema to mirror (D8 deferred; measure snapshot size after P2).
 import { Room, Client, generateId } from 'colyseus';
-import { EventBus, Rng, FIXED_STEP } from '../src/core';
+import { EventBus, Rng, FIXED_STEP, SECONDS_PER_TIC } from '../src/core';
 import type { GameEventMap, SimContext } from '../src/core';
 import { World } from '../src/entities';
 import { GameSession, type TicCommand } from '../src/game/session';
@@ -21,9 +21,13 @@ import type {
   ServerMessage,
 } from '../src/lobby/protocol';
 import { computeStatus, defaultMatchConfig } from '../src/lobby/protocol';
+import { createGameMode, type GameMode, type ModeContext } from './modes/game-mode';
+import { ServerSoundCollector } from './sound-collector';
 
 /** Sim steps per network snapshot: 60Hz sim / 3 ≈ 20Hz broadcast ([netcode §4.5]). */
 const STEPS_PER_SNAPSHOT = 3;
+/** Doom-tics advanced per fixed sim step (same factor the sim/client use). */
+const TICS_PER_STEP = FIXED_STEP / SECONDS_PER_TIC;
 const EPISODES = [EPISODE1];
 
 type CreateOptions = { config?: MatchConfig; name?: string; color?: number };
@@ -40,7 +44,12 @@ export class MatchRoom extends Room {
   private started = false;
   private sim: GameSession | null = null;
   private world: World | null = null;
-  private mode: MatchConfig['mode'] = 'coop';
+  /** The injected rule set (FF / monsters / spawns / respawn / level flow) — co-op now,
+   *  deathmatch in P5 (server/modes). Null until START. */
+  private mode: GameMode | null = null;
+  /** Turns the authoritative sim's gameplay events into positional NetSounds for the
+   *  snapshot, so co-op SFX play on every client (server/sound-collector). */
+  private sounds: ServerSoundCollector | null = null;
   private levelId = '';
   private tick = 0;
   private accumulatorSec = 0;
@@ -166,7 +175,8 @@ export class MatchRoom extends Room {
     const cfg = this.roomState.config;
     const episode = EPISODES[cfg.episode] ?? EPISODES[0]!;
     this.levelId = episode.levels[cfg.startLevel]?.id ?? episode.levels[0]!.id;
-    this.mode = cfg.mode;
+    const mode = createGameMode(cfg);
+    this.mode = mode;
     const seed = (Math.random() * 0x7fffffff) | 0;
 
     const world = new World();
@@ -175,11 +185,18 @@ export class MatchRoom extends Room {
     // One sim player per connected marine (join order = roster order = sim id 0..N-1).
     while (world.players.size < this.roomState.players.length) world.addPlayer(0, 0, 0);
     const ctx: SimContext = { world, events, rng, skill: cfg.skill, episodeLevel: cfg.startLevel };
-    const sim = new GameSession(ctx, { presentation: false });
+    // presentation:true so the sim emits the switch/lift 'sfx' the sound collector networks
+    // (it never changes deterministic state — only whether cosmetic sound events are emitted).
+    const sim = new GameSession(ctx, { presentation: true });
+    this.sim = sim;
+    this.world = world;
 
-    // skill → SKILLS, episode/level → startLevel, mode → friendly-fire (multiplayer-plan §3.6).
+    // skill → SKILLS, episode/level → startLevel (multiplayer-plan §3.6); then the mode injects
+    // its rules: friendly fire, and whether the level's monsters simulate (co-op keeps them).
     sim.startNewGame(cfg.skill, this.levelId);
-    world.friendlyFire = cfg.mode === 'coop' ? false : true;
+    world.friendlyFire = mode.friendlyFire;
+    if (!mode.monstersEnabled) world.monsters.length = 0;
+    mode.onLevelStart(this.modeContext());
 
     this.roomState.players.forEach((lp, i) => {
       const sid = this.sessionByLobbyId.get(lp.id);
@@ -188,8 +205,12 @@ export class MatchRoom extends Room {
       this.metaBySimId.set(i, { sid, name: lp.name, color: lp.color });
     });
 
-    this.sim = sim;
-    this.world = world;
+    // Networked SFX: collect the sim's gameplay sounds into each snapshot.
+    this.sounds = new ServerSoundCollector(world, () => sim.firingPlayerPos);
+    this.sounds.bindGame(events);
+    this.sounds.bindCombat(sim.combat!);
+    this.sounds.resetPickups();
+
     this.tick = 0;
     this.accumulatorSec = 0;
     this.snapCounter = 0;
@@ -199,28 +220,69 @@ export class MatchRoom extends Room {
     this.roomState.status = 'inMatch';
     this.broadcastLobby({ t: 'matchStarting', config: cfg, seed, levelId: this.levelId });
     this.broadcastSnapshot(); // an immediate baseline so both clients spawn at once
-    console.log(`[room ${this.roomId}] MATCH START — ${this.levelId}, ${this.roomState.players.length} marines, FF ${world.friendlyFire}`);
+    console.log(`[room ${this.roomId}] MATCH START — ${this.levelId} (${mode.id}), ${this.roomState.players.length} marines, FF ${world.friendlyFire}`);
+  }
+
+  /** Build the rule-set context for the current step (the GameMode reads/mutates the live
+   *  sim through it, so a mode never imports the room). `playerCount` = marines in the match. */
+  private modeContext(): ModeContext {
+    return {
+      world: this.world!,
+      sim: this.sim!,
+      config: this.roomState.config,
+      level: this.sim!.currentLevelData!,
+      playerCount: this.roomState.players.length,
+    };
   }
 
   // ── authoritative loop ─────────────────────────────────────────────────────────
 
   private step(dtMs: number): void {
-    if (!this.started || !this.sim) return;
+    if (!this.started || !this.sim || !this.mode || !this.sounds) return;
     // Fixed-step accumulator so the sim advances at exactly the client's cadence (so
     // co-op movement speed matches single-player) regardless of timer jitter.
     this.accumulatorSec += Math.min(dtMs / 1000, 0.25);
-    let exited = false;
     while (this.accumulatorSec >= FIXED_STEP) {
       const r = this.sim.stepNetwork(this.commands);
       this.accumulatorSec -= FIXED_STEP;
       this.tick++;
-      if (r.exit) exited = true;
+      // Mode bookkeeping each step: co-op respawn timers (dm frag/time limits in P5).
+      const limitHit = this.mode.update(this.modeContext(), TICS_PER_STEP);
+      this.sounds.notePickups();
+      if (r.exit) {
+        // Shared progression: a marine reached the exit → advance the whole party, or end the
+        // match on the final level (multiplayer-plan §4 / §5).
+        if (this.mode.onLevelExit(this.modeContext()) === 'advance') this.advanceLevel();
+        else this.endMatch();
+        if (!this.started) return; // match ended (episode complete) — stop stepping
+        continue; // new level seeded; advanceLevel already broadcast its baseline
+      }
+      if (limitHit) {
+        this.endMatch();
+        return;
+      }
       if (++this.snapCounter >= STEPS_PER_SNAPSHOT) {
         this.snapCounter = 0;
         this.broadcastSnapshot();
       }
     }
-    if (exited) this.endMatch();
+  }
+
+  /** Co-op shared progression: load the next level into the running sim, re-seed the mode +
+   *  sound collector for it, and broadcast a baseline so clients reload + spawn together. The
+   *  network tick keeps advancing (never reset), so clients accept the level-change snapshot. */
+  private advanceLevel(): void {
+    if (this.sim!.advanceAfterIntermission() === 'victory') {
+      this.endMatch();
+      return;
+    }
+    if (!this.mode!.monstersEnabled) this.world!.monsters.length = 0;
+    this.levelId = this.sim!.currentLevelData?.id ?? this.levelId;
+    this.mode!.onLevelStart(this.modeContext()); // clear respawn timers, revive dead marines
+    this.sounds!.bindCombat(this.sim!.combat!); // the combat bus is rebuilt per level
+    this.sounds!.resetPickups();
+    this.broadcastSnapshot();
+    console.log(`[room ${this.roomId}] LEVEL → ${this.levelId}`);
   }
 
   private broadcastSnapshot(): void {
@@ -230,21 +292,26 @@ export class MatchRoom extends Room {
     if (!sim || !world || !level) return;
     const snap = buildSnapshot(world, level, {
       tick: this.tick,
-      mode: this.mode,
+      mode: this.mode?.id ?? 'coop',
       isFiring: (id) => sim.isFiring(id),
       processedSeq: (id) => sim.processedSeqFor(id),
       metaFor: (id) => this.metaBySimId.get(id) ?? { sid: '', name: '', color: 0 },
     });
+    snap.sounds = this.sounds?.flush() ?? []; // positional SFX collected since the last broadcast
     this.broadcast('snapshot', snap);
   }
 
   private endMatch(): void {
     this.started = false;
+    this.sounds?.dispose();
+    const mode = this.mode?.id ?? 'coop';
     this.sim = null;
     this.world = null;
+    this.sounds = null;
+    this.mode = null;
     this.roomState.status = 'postMatch';
-    this.broadcastLobby({ t: 'matchEnded', results: { mode: this.mode } });
-    console.log(`[room ${this.roomId}] match ended (level exit)`);
+    this.broadcastLobby({ t: 'matchEnded', results: { mode } });
+    console.log(`[room ${this.roomId}] match ended (episode complete)`);
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────────

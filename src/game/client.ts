@@ -97,6 +97,10 @@ export class GameClient {
 
   private automapOn = false;
   private cmdSeq = 0;
+  /** Id of the level the presenter last set up for. Online the server can advance the whole
+   *  co-op party to the next level mid-match (no client intermission), so we detect the
+   *  change here and re-run the per-level presentation setup (music/HUD/view-floor). */
+  private activeLevelId = '';
   /** Decaying 0..1 tint strengths: red on taking damage, gold on a pickup. */
   private damageFlash = 0;
   private bonusFlash = 0;
@@ -207,6 +211,7 @@ export class GameClient {
   private onLevelLoaded(): void {
     const data = this.session.currentLevelData;
     if (!data) return;
+    this.activeLevelId = data.id;
 
     this.gse?.unbindAll();
     this.gse = new GameSoundEvents(this.audio, (id) => this.locate(id));
@@ -271,6 +276,10 @@ export class GameClient {
 
   tic(cmd: TicCommand): TicResult {
     const result = this.session.tic(cmd);
+    // Server-driven co-op level advance: the authority can swap the whole party to the next
+    // level mid-match (no client intermission). Re-run per-level presentation setup once.
+    const data = this.session.currentLevelData;
+    if (data && data.id !== this.activeLevelId) this.onLevelLoaded();
     const level = this.session.currentLevel;
     if (level) {
       const T = TICS_PER_STEP;
@@ -306,6 +315,13 @@ export class GameClient {
     const { renderer, assets, config } = this.ctx;
     const world = this.session.world;
     this.audio.setListener(world.player.x, world.player.y, world.player.angle);
+    // Networked co-op SFX: play any sounds the latest snapshots carried, now that the listener
+    // sits on the local marine, so gunfire/monsters/pickups/doors spatialise correctly. Offline
+    // takeSounds is absent and solo SFX play straight off the in-process event bus instead.
+    const sounds = this.session.takeSounds?.();
+    if (sounds) {
+      for (const s of sounds) this.audio.play(s.sound, { x: s.x, y: s.y, priority: s.priority });
+    }
     // The status bar owns the bottom strip; the 3D view + weapon render above it.
     const playViewHeight = config.internalHeight - this.hud.barHeightPx(config.internalWidth);
     // Offset = smoothed view-floor − the actual tier under the player; folding it into

@@ -19,6 +19,9 @@ export const NETCODE = {
   /** Ticks the local weapon view shows its firing frame after a fire command, so the gun
    *  reacts to the trigger immediately instead of waiting a round-trip for the snapshot. */
   FIRE_VIEW_LATCH_TICS: 3,
+  /** Cap on queued networked SFX awaiting playback — drops the oldest if the presenter
+   *  stalls so a backlog can never balloon (a hitch should never replay seconds of sound). */
+  SOUND_QUEUE_MAX: 64,
 } as const;
 
 /** Default artificial latency for the dev network-sim (the GameClient flag / tests). */
