@@ -34,6 +34,7 @@ export class LevelRuntime implements ILevelRuntime {
   private readonly doorByCell = new Map<number, DoorRuntime>();
   private readonly liftByCell = new Map<number, LiftRuntime>();
   private readonly fired = new Set<string>(); // once-triggers already consumed
+  private readonly walkoverOccupancy = new Map<number, Set<string>>(); // entityId → walkover keys it currently stands on
 
   constructor(data: MapData) {
     this.data = data;
@@ -120,5 +121,17 @@ export class LevelRuntime implements ILevelRuntime {
 
   markFired(kind: string, i: number): void {
     this.fired.add(`${kind}:${i}`);
+  }
+
+  /** Edge-detect walkover triggers. Given the keys an entity's body overlaps this
+   *  tic, record them and return only the ones it just *entered*, so a body parked
+   *  on a repeatable trigger fires once per crossing — not every tic (otherwise a
+   *  lift re-triggers each frame it rests on `top` and cycles forever). */
+  walkoverEntries(entityId: number, currentKeys: readonly string[]): Set<string> {
+    const prev = this.walkoverOccupancy.get(entityId);
+    const entered = new Set<string>();
+    for (const k of currentKeys) if (!prev?.has(k)) entered.add(k);
+    this.walkoverOccupancy.set(entityId, new Set(currentKeys));
+    return entered;
   }
 }
