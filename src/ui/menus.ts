@@ -7,7 +7,12 @@ import type { RenderConfig, Audio, Bindings, Action, Input, SkillId } from '../c
 import { RESOLUTION_TIERS } from '../core';
 import { SKILLS } from '../data';
 import { EPISODE1 } from '../levels';
+import type { LobbyClient, MatchConfig, RoomStatus } from '../lobby';
+import { defaultMatchConfig } from '../lobby';
 import { TextureCache, drawText, FONT_LINE_HEIGHT, HUD_FONT } from './gfx';
+
+/** Available episodes for the host config picker (grows with content). */
+const EPISODES = [EPISODE1];
 
 /** Edge-triggered menu navigation. Fill from whatever keys integration prefers. */
 export interface MenuInput {
@@ -38,6 +43,9 @@ export type MenuCommand =
   | { type: 'endGame' } // pause → title
   | { type: 'showCredits' }
   | { type: 'quit' }
+  // Host pressed START with everyone ready. The integration hands `config` to a
+  // RemoteSession to begin the networked match (multiplayer-plan §3.6; P2 stub today).
+  | { type: 'mpStartMatch'; config: MatchConfig; seed: number; levelId: string }
   | { type: 'exitMenu' }; // backed out of the root main menu → title
 
 /** Services the menus read/mutate. config is mutated in place (it is live settings). */
@@ -50,9 +58,22 @@ export interface MenuContext {
   readonly audio?: Audio;
   /** Called after the menu toggles internal resolution so integration can re-init. */
   readonly onResolutionChange?: () => void;
+  /** The client lobby state machine the multiplayer screens drive (multiplayer-plan
+   *  §3). Omit to leave HOST/JOIN as "SOON" stubs (offline-only builds). */
+  readonly lobby?: LobbyClient;
 }
 
-type PageId = 'main' | 'multiplayer' | 'episodes' | 'skill' | 'options' | 'keybinds' | 'pause';
+type PageId =
+  | 'main'
+  | 'multiplayer'
+  | 'mpHost'
+  | 'mpJoin'
+  | 'mpLobby'
+  | 'episodes'
+  | 'skill'
+  | 'options'
+  | 'keybinds'
+  | 'pause';
 
 interface MenuItem {
   label: string;
@@ -70,6 +91,9 @@ interface Frame {
 const PAGE_TITLE: Record<PageId, string> = {
   main: 'DOOM // TS',
   multiplayer: 'MULTIPLAYER',
+  mpHost: 'CREATE ROOM',
+  mpJoin: 'JOIN ROOM',
+  mpLobby: 'LOBBY',
   episodes: 'WHICH EPISODE',
   skill: 'CHOOSE SKILL',
   options: 'OPTIONS',
@@ -85,6 +109,37 @@ function volumeBar(frac: number): string {
   return `[${'#'.repeat(filled)}${'-'.repeat(n - filled)}]`;
 }
 
+/** Step a skill id 1..5 with wraparound. */
+function stepSkill(s: SkillId, dir: number): SkillId {
+  return ((((s - 1 + dir) % 5) + 5) % 5 + 1) as SkillId;
+}
+
+/** Wrap an index into [0, n) by `dir` steps. */
+function wrap(i: number, dir: number, n: number): number {
+  return (((i + dir) % n) + n) % n;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function statusLabel(s: RoomStatus): string {
+  switch (s) {
+    case 'hosting':
+      return 'WAITING FOR PLAYERS';
+    case 'waiting':
+      return 'NOT ALL READY';
+    case 'allReady':
+      return 'ALL READY';
+    case 'starting':
+      return 'STARTING...';
+    case 'inMatch':
+      return 'IN MATCH';
+    case 'postMatch':
+      return 'POST MATCH';
+  }
+}
+
 export class Menus {
   private readonly cache: TextureCache;
   private readonly ctx: MenuContext;
@@ -93,6 +148,12 @@ export class Menus {
   private readonly settings = { master: 1, sfx: 1, music: 0.7, sensitivity: 1 };
   /** Non-null while the key-bindings screen waits for the next key to bind. */
   private capturing: Action | null = null;
+  /** The host's working config on the create-room screen (before the room exists). */
+  private hostDraft: MatchConfig = defaultMatchConfig('coop');
+  /** The join screen's editable text fields (room code / host address). */
+  private readonly joinFields = { code: '', addr: '' };
+  /** Non-null while a join text field captures typed characters. */
+  private typing: 'code' | 'addr' | null = null;
 
   constructor(cache: TextureCache, ctx: MenuContext) {
     this.cache = cache;
@@ -107,8 +168,8 @@ export class Menus {
 
   /** Advance navigation/settings for one input frame. Returns a command or null. */
   update(input: MenuInput): MenuCommand | null {
-    // While rebinding, a one-shot window listener owns the next key; freeze nav.
-    if (this.capturing) return null;
+    // While rebinding or typing a join field, a window listener owns the keys; freeze nav.
+    if (this.capturing || this.typing) return null;
     const frame = this.stack[this.stack.length - 1]!;
     const items = this.items(frame.page);
     const n = items.length;
@@ -161,13 +222,18 @@ export class Menus {
 
     if (frame.page === 'keybinds') {
       this.drawKeybinds(ctx, w, h, scale, frame.cursor);
+    } else if (frame.page === 'mpLobby') {
+      const itemsTop = this.drawLobbyHeader(ctx, w, h, scale);
+      this.drawItems(ctx, frame, w, h, scale, itemsTop);
     } else {
       this.drawItems(ctx, frame, w, h, scale);
     }
 
-    const hint = this.capturing
-      ? 'PRESS A KEY   ESC CANCELS'
-      : 'W/S MOVE   E SELECT   ESC BACK';
+    const hint = this.typing
+      ? 'TYPE   ENTER OK   ESC DONE'
+      : this.capturing
+        ? 'PRESS A KEY   ESC CANCELS'
+        : 'W/S MOVE   A/D CHANGE   E SELECT   ESC BACK';
     drawText(ctx, this.cache, HUD_FONT, hint, w / 2, h - 14 * scale, {
       scale,
       align: 'center',
@@ -176,7 +242,7 @@ export class Menus {
 
   // ── internals ────────────────────────────────────────────────────────────────
 
-  private drawItems(ctx: CanvasRenderingContext2D, frame: Frame, w: number, h: number, baseScale: number): void {
+  private drawItems(ctx: CanvasRenderingContext2D, frame: Frame, w: number, h: number, baseScale: number, topFrac = 0.32): void {
     const items = this.items(frame.page);
     // Value rows (sliders/choices) carry a wide bar string, so they render a notch
     // smaller across the full width; plain lists stay big and centred.
@@ -185,7 +251,7 @@ export class Menus {
     const labelX = hasValues ? w * 0.14 : w / 2 - 60 * scale;
     const valueX = w * 0.86;
     const lineH = (FONT_LINE_HEIGHT + 6) * scale;
-    let y = h * 0.32;
+    let y = h * topFrac;
     for (let i = 0; i < items.length; i++) {
       const it = items[i]!;
       const selected = i === frame.cursor;
@@ -249,6 +315,183 @@ export class Menus {
     window.addEventListener('keydown', handler, true);
   }
 
+  // ── multiplayer lobby ──────────────────────────────────────────────────────────
+
+  /** Apply a host create-screen edit; changing episode resets the chosen level. */
+  private editDraft(partial: Partial<MatchConfig>): void {
+    Object.assign(this.hostDraft, partial);
+    if (partial.episode !== undefined) this.hostDraft.startLevel = 0;
+  }
+
+  /** The MatchConfig rows, shared (DRY) by the host create screen and the lobby panel
+   *  (multiplayer-plan §3.5). When `editable` is false (a non-host viewing the lobby)
+   *  the rows are read-only: no onLeft/onRight and the value drops its < > markers. */
+  private configRows(cfg: MatchConfig, editable: boolean, apply: (p: Partial<MatchConfig>) => void): MenuItem[] {
+    const row = (label: string, value: string, prev: () => void, next: () => void): MenuItem =>
+      editable ? { label, value: `< ${value} >`, onLeft: prev, onRight: next } : { label, value };
+
+    const toggleMode = (): void => apply({ mode: cfg.mode === 'coop' ? 'deathmatch' : 'coop' });
+    const ep = EPISODES[cfg.episode] ?? EPISODES[0]!;
+    const lvl = ep.levels[cfg.startLevel] ?? ep.levels[0]!;
+    const rows: MenuItem[] = [
+      row('MODE', cfg.mode === 'coop' ? 'CO-OP' : 'DEATHMATCH', toggleMode, toggleMode),
+      row(
+        'SKILL',
+        SKILLS[cfg.skill].name,
+        () => apply({ skill: stepSkill(cfg.skill, -1) }),
+        () => apply({ skill: stepSkill(cfg.skill, 1) }),
+      ),
+      row(
+        'EPISODE',
+        ep.name,
+        () => apply({ episode: wrap(cfg.episode, -1, EPISODES.length) }),
+        () => apply({ episode: wrap(cfg.episode, 1, EPISODES.length) }),
+      ),
+      row(
+        'LEVEL',
+        lvl.name,
+        () => apply({ startLevel: wrap(cfg.startLevel, -1, ep.levels.length) }),
+        () => apply({ startLevel: wrap(cfg.startLevel, 1, ep.levels.length) }),
+      ),
+      row(
+        'MAX PLAYERS',
+        String(cfg.maxPlayers),
+        () => apply({ maxPlayers: clamp(cfg.maxPlayers - 1, 2, 8) }),
+        () => apply({ maxPlayers: clamp(cfg.maxPlayers + 1, 2, 8) }),
+      ),
+    ];
+
+    if (cfg.mode === 'deathmatch') {
+      const toggleRespawn = (): void => apply({ itemRespawn: !cfg.itemRespawn });
+      rows.push(
+        row(
+          'FRAG LIMIT',
+          cfg.fragLimit === 0 ? 'OFF' : String(cfg.fragLimit),
+          () => apply({ fragLimit: clamp(cfg.fragLimit - 5, 0, 50) }),
+          () => apply({ fragLimit: clamp(cfg.fragLimit + 5, 0, 50) }),
+        ),
+        row(
+          'TIME LIMIT',
+          cfg.timeLimit === 0 ? 'OFF' : `${cfg.timeLimit} MIN`,
+          () => apply({ timeLimit: clamp(cfg.timeLimit - 5, 0, 30) }),
+          () => apply({ timeLimit: clamp(cfg.timeLimit + 5, 0, 30) }),
+        ),
+        row('ITEM RESPAWN', cfg.itemRespawn ? 'ON' : 'OFF', toggleRespawn, toggleRespawn),
+      );
+    } else {
+      const order: MatchConfig['coopRespawn'][] = ['levelStart', 'waitForRevive', 'partyWipe'];
+      const labels: Record<MatchConfig['coopRespawn'], string> = {
+        levelStart: 'LEVEL START',
+        waitForRevive: 'WAIT REVIVE',
+        partyWipe: 'PARTY WIPE',
+      };
+      const i = order.indexOf(cfg.coopRespawn);
+      rows.push(
+        row(
+          'DEATH RULE',
+          labels[cfg.coopRespawn],
+          () => apply({ coopRespawn: order[wrap(i, -1, order.length)]! }),
+          () => apply({ coopRespawn: order[wrap(i, 1, order.length)]! }),
+        ),
+      );
+    }
+    return rows;
+  }
+
+  /** The lobby screen's interactive rows: ready toggle, the (editable-if-host) config
+   *  panel, the host START gate, leave. The roster + code are the drawLobbyHeader. */
+  private lobbyItems(): MenuItem[] {
+    const lobby = this.ctx.lobby;
+    const room = lobby?.room;
+    if (!lobby || !room) return []; // connecting / rejected — header shows the status
+    const me = lobby.localPlayer;
+    const items: MenuItem[] = [
+      {
+        label: 'READY',
+        value: me?.ready ? 'YES' : 'NO',
+        onSelect: () => {
+          lobby.toggleReady();
+          return null;
+        },
+      },
+      ...this.configRows(room.config, lobby.isHost, (p) => lobby.setConfig(p)),
+    ];
+    if (lobby.isHost) {
+      items.push({
+        label: 'START MATCH',
+        value: lobby.canStart ? undefined : 'WAIT ALL READY',
+        onSelect: () => {
+          if (!lobby.canStart) return null;
+          lobby.start();
+          const ms = lobby.matchStarting;
+          return ms ? { type: 'mpStartMatch', config: ms.config, seed: ms.seed, levelId: ms.levelId } : null;
+        },
+      });
+    }
+    items.push({
+      label: 'LEAVE ROOM',
+      onSelect: () => {
+        lobby.leave();
+        this.stack.length = Math.max(1, this.stack.length - 2); // back to the multiplayer page
+        return null;
+      },
+    });
+    return items;
+  }
+
+  /** Draw the room code + roster + status above the lobby's interactive rows. Returns
+   *  the top fraction those rows should start at (it slides down as the roster grows). */
+  private drawLobbyHeader(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number): number {
+    const lobby = this.ctx.lobby;
+    const room = lobby?.room;
+    if (!lobby || !room) {
+      const msg = lobby?.phase === 'rejected' ? `JOIN FAILED: ${lobby.rejectReason ?? ''}` : 'CONNECTING...';
+      drawText(ctx, this.cache, HUD_FONT, msg, w / 2, h * 0.4, { scale, align: 'center' });
+      return 0.5;
+    }
+    drawText(ctx, this.cache, HUD_FONT, `ROOM ${room.code}   ${statusLabel(room.status)}`, w / 2, h * 0.2, {
+      scale,
+      align: 'center',
+    });
+    const lineH = (FONT_LINE_HEIGHT + 4) * scale;
+    let y = h * 0.28;
+    for (const p of room.players) {
+      const tag = p.isHost ? '[HOST] ' : '       ';
+      const ready = p.ready ? 'READY' : '......';
+      const you = p.id === lobby.localPlayerId ? ' <' : '';
+      drawText(ctx, this.cache, HUD_FONT, `${tag}${p.name}`, w * 0.14, y, { scale });
+      drawText(ctx, this.cache, HUD_FONT, ready + you, w * 0.86, y, { scale, align: 'right' });
+      y += lineH;
+    }
+    return Math.min(0.62, 0.34 + room.players.length * 0.06);
+  }
+
+  /** Capture typed characters into a join text field until Enter/Escape (mirrors the
+   *  key-rebind capture: a capture-phase listener keeps keys out of the game input). */
+  private beginTextCapture(field: 'code' | 'addr'): void {
+    if (this.typing) return;
+    this.typing = field;
+    const max = field === 'code' ? 6 : 24;
+    const handler = (e: KeyboardEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.code === 'Enter' || e.code === 'Escape') {
+        window.removeEventListener('keydown', handler, true);
+        this.typing = null;
+        this.sound('select');
+        return;
+      }
+      if (e.code === 'Backspace') {
+        this.joinFields[field] = this.joinFields[field].slice(0, -1);
+        return;
+      }
+      if (e.key.length === 1 && /[A-Za-z0-9.:]/.test(e.key) && this.joinFields[field].length < max) {
+        this.joinFields[field] += field === 'code' ? e.key.toUpperCase() : e.key;
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+  }
+
   private back(): MenuCommand | null {
     if (this.stack.length > 1) {
       this.stack.pop();
@@ -275,13 +518,71 @@ export class Menus {
           { label: 'QUIT', onSelect: () => ({ type: 'quit' }) },
         ];
       case 'multiplayer':
-        // Host/Join are the online (RemoteSession) path — the netcode + lobby land in a
-        // later phase (multiplayer-plan P2/P3b). Offline single-player is unaffected.
+        // Host/Join drive the client lobby state machine over a (mock) LobbyTransport
+        // (multiplayer-plan §3). The real network transport lands in P2; until then the
+        // mock makes the whole flow navigable. Offline single-player is unaffected.
+        if (!this.ctx.lobby) {
+          return [
+            { label: 'HOST GAME', value: 'SOON', onSelect: () => null },
+            { label: 'JOIN GAME', value: 'SOON', onSelect: () => null },
+            { label: 'BACK', onSelect: () => this.back() },
+          ];
+        }
         return [
-          { label: 'HOST GAME', value: 'SOON', onSelect: () => null },
-          { label: 'JOIN GAME', value: 'SOON', onSelect: () => null },
+          {
+            label: 'HOST GAME',
+            onSelect: () => {
+              this.hostDraft = defaultMatchConfig('coop');
+              return this.push('mpHost');
+            },
+          },
+          { label: 'JOIN GAME', onSelect: () => this.push('mpJoin') },
           { label: 'BACK', onSelect: () => this.back() },
         ];
+      case 'mpHost':
+        return [
+          ...this.configRows(this.hostDraft, true, (partial) => this.editDraft(partial)),
+          {
+            label: 'CREATE ROOM',
+            onSelect: () => {
+              this.ctx.lobby?.host({ ...this.hostDraft });
+              return this.push('mpLobby');
+            },
+          },
+          { label: 'BACK', onSelect: () => this.back() },
+        ];
+      case 'mpJoin':
+        return [
+          {
+            label: 'ROOM CODE',
+            value: this.joinFields.code || '____',
+            onSelect: () => {
+              this.beginTextCapture('code');
+              return null;
+            },
+          },
+          {
+            label: 'ADDRESS',
+            value: this.joinFields.addr || 'HOST:PORT',
+            onSelect: () => {
+              this.beginTextCapture('addr');
+              return null;
+            },
+          },
+          {
+            label: 'JOIN',
+            onSelect: () => {
+              this.ctx.lobby?.join({
+                roomCode: this.joinFields.code || undefined,
+                addr: this.joinFields.addr || undefined,
+              });
+              return this.push('mpLobby');
+            },
+          },
+          { label: 'BACK', onSelect: () => this.back() },
+        ];
+      case 'mpLobby':
+        return this.lobbyItems();
       case 'episodes':
         return [EPISODE1].map((ep, i) => ({
           label: ep.name,

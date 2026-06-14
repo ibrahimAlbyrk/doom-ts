@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:sim": "tsc -p tsconfig.sim.json",
     "sim:headless": "npx tsx server/headless-sim.ts",
-    "test": "npx tsx src/world/world.test.ts && npx tsx src/combat/combat.test.ts && npx tsx src/ai/monster-ai.test.ts && npx tsx src/items/items.test.ts && npx tsx src/weapons/weapons.test.ts && npx tsx src/levels/levels.test.ts",
+    "test": "npx tsx src/world/world.test.ts && npx tsx src/combat/combat.test.ts && npx tsx src/ai/monster-ai.test.ts && npx tsx src/items/items.test.ts && npx tsx src/weapons/weapons.test.ts && npx tsx src/levels/levels.test.ts && npx tsx src/lobby/lobby-client.test.ts",
     "extract-assets": "tsx tools/extract-wad/extract.ts"
   },
   "devDependencies": {

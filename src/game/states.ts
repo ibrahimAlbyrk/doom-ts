@@ -144,6 +144,12 @@ class MenuState extends BaseState {
       case 'showCredits':
         this.ctx.transition('credits');
         break;
+      case 'mpStartMatch':
+        // Lobby reached ALL_READY and the host pressed START. P2 wires the actual
+        // networked match here; for now this is a clearly-marked stub (stays in the
+        // lobby, which shows "STARTING..."). Single-player offline is unaffected.
+        this.session.startNetworkedMatch(cmd.config);
+        break;
       case 'quit':
       case 'exitMenu':
         this.ctx.transition('title');
