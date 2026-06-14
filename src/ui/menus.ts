@@ -49,6 +49,9 @@ export type MenuCommand =
 export interface MenuContext {
   readonly config: RenderConfig;
   readonly getBindings: () => Bindings;
+  /** Persist a rebound action. Wire to InputManager.setBinding to enable rebinding;
+   *  omit to leave the key-bindings screen read-only. */
+  readonly setBinding?: (action: Action, code: string) => void;
   readonly audio?: Audio;
   /** Called after the menu toggles internal resolution so integration can re-init. */
   readonly onResolutionChange?: () => void;
@@ -92,6 +95,8 @@ export class Menus {
   private stack: Frame[] = [{ page: 'main', cursor: 0 }];
   private chosenEpisode = 0;
   private readonly settings = { master: 1, sfx: 1, music: 0.7, sensitivity: 1 };
+  /** Non-null while the key-bindings screen waits for the next key to bind. */
+  private capturing: Action | null = null;
 
   constructor(cache: TextureCache, ctx: MenuContext) {
     this.cache = cache;
@@ -106,6 +111,8 @@ export class Menus {
 
   /** Advance navigation/settings for one input frame. Returns a command or null. */
   update(input: MenuInput): MenuCommand | null {
+    // While rebinding, a one-shot window listener owns the next key; freeze nav.
+    if (this.capturing) return null;
     const frame = this.stack[this.stack.length - 1]!;
     const items = this.items(frame.page);
     const n = items.length;
@@ -157,12 +164,15 @@ export class Menus {
     drawText(ctx, this.cache, HUD_FONT, PAGE_TITLE[frame.page], w / 2, h * 0.12, { scale: titleScale, align: 'center' });
 
     if (frame.page === 'keybinds') {
-      this.drawKeybinds(ctx, w, h, scale);
+      this.drawKeybinds(ctx, w, h, scale, frame.cursor);
     } else {
       this.drawItems(ctx, frame, w, h, scale);
     }
 
-    drawText(ctx, this.cache, HUD_FONT, 'W/S MOVE   E SELECT   ESC BACK', w / 2, h - 14 * scale, {
+    const hint = this.capturing
+      ? 'PRESS A KEY   ESC CANCELS'
+      : 'W/S MOVE   E SELECT   ESC BACK';
+    drawText(ctx, this.cache, HUD_FONT, hint, w / 2, h - 14 * scale, {
       scale,
       align: 'center',
     });
@@ -192,7 +202,7 @@ export class Menus {
     }
   }
 
-  private drawKeybinds(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number): void {
+  private drawKeybinds(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number, cursor: number): void {
     const bindings = this.ctx.getBindings();
     const actions = Object.keys(bindings) as Action[];
     const lineH = (FONT_LINE_HEIGHT + 2) * scale;
@@ -203,10 +213,44 @@ export class Menus {
       const col = Math.floor(i / rows);
       const row = i % rows;
       const x = 14 * scale + col * colW;
-      const y = h * 0.28 + row * lineH;
+      const y = h * 0.24 + row * lineH;
+      const selected = i === cursor;
+      ctx.globalAlpha = selected ? 1 : 0.55;
+      if (selected) drawText(ctx, this.cache, HUD_FONT, '>', x - 10 * scale, y, { scale });
       drawText(ctx, this.cache, HUD_FONT, action, x, y, { scale });
-      drawText(ctx, this.cache, HUD_FONT, bindings[action], x + colW - 24 * scale, y, { scale, align: 'right' });
+      const value = this.capturing === action ? '...' : bindings[action];
+      drawText(ctx, this.cache, HUD_FONT, value, x + colW - 24 * scale, y, { scale, align: 'right' });
+      ctx.globalAlpha = 1;
     }
+  }
+
+  /** One navigable row per action; selecting a row starts press-to-bind capture. */
+  private keybindItems(): MenuItem[] {
+    const actions = Object.keys(this.ctx.getBindings()) as Action[];
+    return actions.map((action) => ({
+      label: action,
+      onSelect: () => {
+        this.beginCapture(action);
+        return null;
+      },
+    }));
+  }
+
+  /** Listen (capture phase) for the next key and bind it. Escape cancels. The capture
+   *  phase + stopPropagation keep the key from leaking to the game's own input. */
+  private beginCapture(action: Action): void {
+    if (!this.ctx.setBinding || this.capturing) return;
+    this.capturing = action;
+    const handler = (e: KeyboardEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.removeEventListener('keydown', handler, true);
+      this.capturing = null;
+      if (e.code === 'Escape') return; // cancel — keep the old binding
+      this.ctx.setBinding?.(action, e.code);
+      this.sound('select');
+    };
+    window.addEventListener('keydown', handler, true);
   }
 
   private back(): MenuCommand | null {
@@ -254,7 +298,7 @@ export class Menus {
           { label: 'KEY BINDINGS', onSelect: () => this.push('keybinds') },
         ];
       case 'keybinds':
-        return [];
+        return this.keybindItems();
       case 'pause':
         return [
           { label: 'RESUME', onSelect: () => ({ type: 'resume' }) },
