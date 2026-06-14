@@ -15,6 +15,8 @@ import {
   LocalSession,
   RemoteSession,
   ColyseusTransport,
+  LatencyTransport,
+  type LatencyOptions,
   type Session,
   type RemoteAvatar,
   type TicCommand,
@@ -43,6 +45,22 @@ const MP_SERVER_URL = `ws://${location.hostname || 'localhost'}:2567`;
 const NAMETAG_COLORS = ['#56c84c', '#6f78ff', '#b9803f', '#ff4d4d'] as const;
 /** Nominal PLAY sprite texel height — for placing a nametag just above the avatar's head. */
 const AVATAR_SPRITE_H = 56;
+
+/** Read the dev latency-sim flag (localStorage 'mpNetSim' or ?netsim=base,jitter), e.g.
+ *  "120,30" → 120ms ± 30ms on the session channel. Null (the default) = no added latency. */
+function netSimOptions(): LatencyOptions | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem('mpNetSim');
+  } catch {
+    /* localStorage may be unavailable */
+  }
+  raw ??= new URLSearchParams(location.search).get('netsim');
+  if (!raw) return null;
+  const [base, jitter] = raw.split(',').map((n) => Number(n.trim()));
+  if (!Number.isFinite(base)) return null;
+  return { baseMs: base!, jitterMs: Number.isFinite(jitter) ? jitter! : 0 };
+}
 
 export class GameClient {
   readonly cache: TextureCache;
@@ -129,7 +147,12 @@ export class GameClient {
    * authoritative — snapshots fill the world in. Single-player offline is untouched.
    */
   startNetworkedMatch(_config: MatchConfig, levelId: string): void {
-    const remote = new RemoteSession(this.transport);
+    // Dev netcode-smoothness check: an optional artificial-latency wrapper around the session
+    // channel (set localStorage 'mpNetSim' = "120,30" or ?netsim=120,30). Off by default, so a
+    // real match — and all of offline single-player — is never delayed.
+    const sim = netSimOptions();
+    const transport = sim ? new LatencyTransport(this.transport, sim) : this.transport;
+    const remote = new RemoteSession(transport);
     remote.enterMatch(levelId);
     this.session = remote;
     this.onLevelLoaded();

@@ -8,7 +8,7 @@
 // / projectiles / pickups are rebuilt each apply (the client never simulates them, it just
 // renders the latest authoritative set). Door/lift dynamic state travels as compact arrays
 // aligned to the level's door/lift order (both sides load the same MapData).
-import type { IWorld, ILevelRuntime, Player, MonsterType, MonsterAIState, WeaponId } from '../core';
+import type { IWorld, ILevelRuntime, Player, Projectile, MonsterType, MonsterAIState, WeaponId } from '../core';
 import type { GameMode } from '../lobby/protocol';
 import { createPlayer, createMonster, createPickup } from '../entities';
 
@@ -36,6 +36,8 @@ export interface PlayerSnap {
   x: number;
   y: number;
   angle: number;
+  vx: number; // velocity (mu/tic) — the client's reconciliation replays momentum from here (P3a)
+  vy: number;
   health: number;
   armor: number;
   weapon: WeaponId; // local first-person gun selection
@@ -110,6 +112,8 @@ export function buildSnapshot(world: IWorld, level: ILevelRuntime, m: SnapshotMe
       x: p.x,
       y: p.y,
       angle: p.angle,
+      vx: p.velX,
+      vy: p.velY,
       health: p.health,
       armor: p.armor.points,
       weapon: p.currentWeapon,
@@ -175,8 +179,8 @@ export function applySnapshot(world: IWorld, level: ILevelRuntime, snap: Snapsho
     p.currentWeapon = ps.weapon;
     p.bob = ps.bob;
     p.active = ps.health > 0;
-    p.velX = 0;
-    p.velY = 0;
+    p.velX = ps.vx;
+    p.velY = ps.vy;
   }
   for (const id of [...world.players.keys()]) {
     if (!seen.has(id) && id !== world.localPlayerId) world.players.delete(id);
@@ -192,22 +196,7 @@ export function applySnapshot(world: IWorld, level: ILevelRuntime, snap: Snapsho
 
   world.projectiles.length = 0;
   for (const pr of snap.projectiles) {
-    world.projectiles.push({
-      id: pr.id,
-      x: pr.x,
-      y: pr.y,
-      angle: pr.angle,
-      radius: 6,
-      active: true,
-      velX: 0,
-      velY: 0,
-      damage: { n: 0, m: 0 },
-      speed: 0,
-      ownerId: -1,
-      ownerFaction: 'neutral',
-      splashRadius: 0,
-      sprite: pr.sprite,
-    });
+    world.projectiles.push(projectileFromSnap(pr.id, pr.x, pr.y, pr.angle, pr.sprite));
   }
 
   world.pickups.length = 0;
@@ -247,4 +236,101 @@ function doorOpen(level: ILevelRuntime, i: number): number {
 }
 function liftHeight(level: ILevelRuntime, i: number): number {
   return liftRuntimes(level)?.[i]?.height ?? 0;
+}
+
+// ── entity interpolation (client, P3a [netcode §4.4]) ──────────────────────────────
+// Remotes are rendered ~one snapshot-interval in the past, lerped between the two
+// bracketing snapshots, so other marines / monsters / projectiles glide instead of
+// teleporting at the snapshot rate. The LOCAL player is never interpolated — client-side
+// prediction owns it (RemoteSession).
+
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/** Shortest-arc angular lerp (radians) so a remote never spins the long way at the 2π seam. */
+function lerpAngle(a: number, b: number, t: number): number {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+
+/** The fixed projectile struct fields a snapshot doesn't carry (client never simulates
+ *  projectiles — they only need a position + sprite to draw). */
+function projectileFromSnap(id: number, x: number, y: number, angle: number, sprite: string): Projectile {
+  return {
+    id, x, y, angle,
+    radius: 6, active: true, velX: 0, velY: 0,
+    damage: { n: 0, m: 0 }, speed: 0, ownerId: -1, ownerFaction: 'neutral', splashRadius: 0,
+    sprite,
+  };
+}
+
+/**
+ * Write the REMOTE world (everyone but `localId`) into the client world/level, interpolated
+ * between snapshots `a` (older) and `b` (newer) at factor `t`∈[0,1]. The local player is
+ * skipped (prediction owns it). Monsters/projectiles are rebuilt from the bracket; pickups
+ * (static) and door/lift tiers come from / lerp toward `b`. Entities present only in `b`
+ * (just spawned) hold at `b`; entities gone from `b` are removed. `avatarMeta` is refreshed
+ * from `b` so nametags/anim-intent track the newest authoritative state.
+ */
+export function interpolateRemotes(
+  world: IWorld,
+  level: ILevelRuntime,
+  a: Snapshot,
+  b: Snapshot,
+  t: number,
+  localId: number,
+  avatarMeta: Map<number, { state: AvatarState; name: string; color: number }>,
+): void {
+  const aPlayers = new Map(a.players.map((p) => [p.id, p]));
+  const seen = new Set<number>();
+  for (const pb of b.players) {
+    if (pb.id === localId) continue;
+    seen.add(pb.id);
+    avatarMeta.set(pb.id, { state: pb.state, name: pb.name, color: pb.color });
+    let p = world.players.get(pb.id);
+    if (!p) {
+      p = createPlayer(pb.id, pb.x, pb.y, pb.angle);
+      world.players.set(pb.id, p);
+    }
+    const pa = aPlayers.get(pb.id) ?? pb; // just spawned → no older sample, hold at b
+    p.x = lerp(pa.x, pb.x, t);
+    p.y = lerp(pa.y, pb.y, t);
+    p.angle = lerpAngle(pa.angle, pb.angle, t);
+    p.health = pb.health;
+    p.currentWeapon = pb.weapon;
+    p.bob = pb.bob;
+    p.active = pb.health > 0;
+  }
+  for (const id of [...world.players.keys()]) {
+    if (id !== localId && !seen.has(id)) world.players.delete(id);
+  }
+
+  const aMon = new Map(a.monsters.map((m) => [m.id, m]));
+  world.monsters.length = 0;
+  for (const mb of b.monsters) {
+    const ma = aMon.get(mb.id) ?? mb;
+    const mo = createMonster(mb.id, mb.type, lerp(ma.x, mb.x, t), lerp(ma.y, mb.y, t), lerpAngle(ma.angle, mb.angle, t));
+    mo.state = mb.state;
+    mo.health = mb.health;
+    world.monsters.push(mo);
+  }
+
+  const aProj = new Map(a.projectiles.map((p) => [p.id, p]));
+  world.projectiles.length = 0;
+  for (const pb of b.projectiles) {
+    const pa = aProj.get(pb.id) ?? pb;
+    world.projectiles.push(projectileFromSnap(pb.id, lerp(pa.x, pb.x, t), lerp(pa.y, pb.y, t), lerpAngle(pa.angle, pb.angle, t), pb.sprite));
+  }
+
+  world.pickups.length = 0;
+  for (const pk of b.pickups) {
+    const pickup = createPickup(pk.id, pk.thingId, pk.x, pk.y);
+    if (pickup) world.pickups.push(pickup);
+  }
+
+  const doors = doorRuntimes(level);
+  if (doors) b.doors.forEach((open, i) => { if (doors[i]) doors[i]!.open = lerp(a.doors[i] ?? open, open, t); });
+  const lifts = liftRuntimes(level);
+  if (lifts) b.lifts.forEach((h, i) => { if (lifts[i]) lifts[i]!.height = lerp(a.lifts[i] ?? h, h, t); });
 }

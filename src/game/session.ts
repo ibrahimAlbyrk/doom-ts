@@ -10,19 +10,8 @@
 // Per-level systems are rebuilt on every startLevel and torn down first, so combat
 // subscriptions never leak between maps. Shared services live on the SimContext.
 import type { SimContext, SkillId, MapData, ILevelRuntime, IWorld, Player } from '../core';
+import { CELL_SIZE, FIXED_STEP, SECONDS_PER_TIC } from '../core';
 import {
-  CELL_SIZE,
-  FIXED_STEP,
-  SECONDS_PER_TIC,
-  PLAYER_THRUST_WALK,
-  PLAYER_THRUST_RUN,
-  TURN_WALK_DEG_PER_SEC,
-  TURN_RUN_DEG_PER_SEC,
-  degToRad,
-} from '../core';
-import {
-  applyThrust,
-  stepMovement,
   updateDoors,
   tryUseDoor,
   triggerLift,
@@ -30,6 +19,7 @@ import {
   cellOf,
   type LevelRuntime,
 } from '../world';
+import { applyPlayerMovement } from './player-movement';
 import { loadLevel, mapDataFor, nextLevelId, thingSpawnsAtSkill, EPISODE1 } from '../levels';
 import { createPlayer, enemyDefForThingId } from '../entities';
 import { CombatBus, updateProjectiles } from '../combat';
@@ -300,16 +290,11 @@ export class GameSession {
   /** Apply ONE marine's command: turn (keyboard + folded mouse-look), movement thrust
    *  with wall-slide collision, use, fire + weapon switching, then advance its weapon. */
   private applyPlayerInput(p: Player, weapons: WeaponSystem, cmd: TicCommand): void {
-    const level = this.level!;
     const T = TICS_PER_STEP;
 
-    const turnRate = degToRad(cmd.run ? TURN_RUN_DEG_PER_SEC : TURN_WALK_DEG_PER_SEC);
-    p.angle += cmd.turn * turnRate * FIXED_STEP + cmd.lookTurn;
-
-    const thrust = cmd.run ? PLAYER_THRUST_RUN : PLAYER_THRUST_WALK;
-    if (cmd.forward !== 0) applyThrust(p, p.angle, thrust * cmd.forward, T);
-    if (cmd.strafe !== 0) applyThrust(p, p.angle + Math.PI / 2, thrust * cmd.strafe, T);
-    stepMovement(p, level, T);
+    // Turn + thrust + wall-slide — the SAME pure step the online client predicts/replays,
+    // so server and client agree on position and wall collisions (multiplayer-plan §1.2).
+    applyPlayerMovement(p, this.level!, cmd, T);
 
     if (cmd.use) this.tryUse(p);
 

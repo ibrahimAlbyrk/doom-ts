@@ -1,18 +1,42 @@
-// RemoteSession — the ONLINE Session (multiplayer-plan P2). It implements the SAME
-// Session interface as LocalSession, but over the wire: it sends each local TicCommand to
-// the authoritative Colyseus host and mirrors the broadcast snapshots into a local world,
-// so the unchanged GameClient presenter renders/HUDs/audio exactly as it does offline. P2
-// applies snapshots RAW (the local player rides the authoritative state, laggy-but-correct);
-// prediction + interpolation are P3a. Offline single-player NEVER touches this file.
+// RemoteSession — the ONLINE Session (multiplayer-plan P2 + P3a netcode smoothing). It
+// implements the SAME Session interface as LocalSession, but over the wire: it sends each
+// local TicCommand to the authoritative Colyseus host and mirrors the broadcast snapshots
+// into a local world, so the unchanged GameClient presenter renders/HUDs/audio exactly as
+// it does offline. P3a makes it feel lag-free with three pieces ([netcode §4.3/§4.4]):
+//   • PREDICTION — the local marine applies its own command immediately (applyPlayerMovement)
+//     and buffers it unacked, so movement/turn never wait a round-trip.
+//   • RECONCILIATION — on each snapshot the local marine snaps to the authoritative state and
+//     replays the still-unacked commands on top, so corrections are invisible when prediction
+//     matched and ease out (no rubber-band) when it didn't.
+//   • INTERPOLATION — every OTHER entity is rendered ~100ms in the past, lerped between the
+//     two bracketing snapshots, so remotes glide instead of teleporting.
+// Offline single-player NEVER touches this file.
 import type { ILevelRuntime, MapData, SkillId } from '../core';
+import { FIXED_STEP, SECONDS_PER_TIC } from '../core';
 import type { CombatBus } from '../combat';
 import { WEAPONS } from '../data';
 import type { WeaponView } from '../weapons';
-import { World } from '../entities';
+import { World, createPlayer } from '../entities';
 import { LevelRuntime } from '../world';
 import { mapDataFor } from '../levels';
+import { applyPlayerMovement } from '../game/player-movement';
 import type { Session, SimStats, TicCommand, TicResult } from './session';
-import { applySnapshot, type AvatarState, type RemoteAvatar, type Snapshot } from './snapshot';
+import {
+  applySnapshot,
+  interpolateRemotes,
+  type AvatarState,
+  type PlayerSnap,
+  type RemoteAvatar,
+  type Snapshot,
+} from './snapshot';
+import { NETCODE } from './netcode-config';
+
+/** A doom-tics-per-fixed-step factor: 60 Hz step → 35 Hz sim — same constant the server +
+ *  LocalSession use, so prediction/replay math matches the authority exactly. */
+const TICS_PER_STEP = FIXED_STEP / SECONDS_PER_TIC;
+
+/** Monotonic-ish ms clock for the interpolation buffer (browser + Node). */
+const defaultNow = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 /** The network boundary a RemoteSession drives — the single place Colyseus plugs in.
  *  Send the local command up; receive authoritative snapshots + reliable gameplay
@@ -62,9 +86,28 @@ export class RemoteSession implements Session {
   /** Per-player nametag/state metadata from the latest snapshot (drives the avatars). */
   private readonly avatarMeta = new Map<number, { state: AvatarState; name: string; color: number }>();
 
-  constructor(transport: SessionTransport & Partial<LocalIdentity>, identity?: LocalIdentity) {
+  /** Local commands the server hasn't acked yet — replayed on top of each correction. */
+  private pending: TicCommand[] = [];
+  /** Interpolation buffer: each broadcast stamped with its client receive time. */
+  private readonly snapBuf: { recv: number; snap: Snapshot }[] = [];
+  /** Newest snapshot tick accepted — drops stale/reordered arrivals under jitter. */
+  private lastSnapTick = -1;
+  /** Decaying visual offset that eases a reconciliation correction so it never pops. */
+  private smoothX = 0;
+  private smoothY = 0;
+  /** Ticks left showing the local gun's firing frame (predicted trigger feedback). */
+  private fireView = 0;
+  /** Clock for the interpolation buffer (injectable so tests drive a virtual time). */
+  private readonly now: () => number;
+
+  constructor(
+    transport: SessionTransport & Partial<LocalIdentity>,
+    identity?: LocalIdentity,
+    opts?: { now?: () => number },
+  ) {
     this.transport = transport;
     this.identity = identity ?? (transport as LocalIdentity);
+    this.now = opts?.now ?? defaultNow;
   }
 
   /** Enter a started match: load the level locally from the MatchConfig, then start
@@ -77,6 +120,12 @@ export class RemoteSession implements Session {
     this.world.level = this.level;
     this.matchOver = false;
     this.localResolved = false;
+    this.pending = [];
+    this.snapBuf.length = 0;
+    this.lastSnapTick = -1;
+    this.smoothX = 0;
+    this.smoothY = 0;
+    this.fireView = 0;
     this.transport.onSnapshot((s) => this.onSnapshot(s as Snapshot));
     this.transport.onEvent((e) => this.onEvent(e));
     void this.transport.connect();
@@ -105,7 +154,9 @@ export class RemoteSession implements Session {
     const p = this.world.players.get(this.world.localPlayerId);
     if (!p) return null;
     const def = WEAPONS[p.currentWeapon];
-    const firing = this.localState === 'fire';
+    // Predicted trigger feedback: show the firing frame the instant fire is pressed
+    // (fireView latch) instead of waiting a round-trip for the authoritative state.
+    const firing = this.localState === 'fire' || this.fireView > 0;
     const hasFlash = def.flashSprite !== '';
     return {
       sprite: def.viewSprite,
@@ -143,14 +194,115 @@ export class RemoteSession implements Session {
 
   // ── Session drive ────────────────────────────────────────────────────────────--
 
-  /** One networked tick: ship the local command; the world is advanced by incoming
-   *  snapshots (applied on receipt), so this only reports the authoritative outcome. */
+  /** One networked tick: ship the local command, then PREDICT the local marine forward
+   *  immediately (no round-trip wait) and INTERPOLATE every remote entity ~100ms in the
+   *  past. Reconciliation against the authoritative state happens on snapshot receipt. */
   tic(cmd: TicCommand): TicResult {
     this.transport.sendCommand(cmd);
+    if (this.level && this.localResolved) {
+      this.predict(cmd);
+      this.interpolate();
+    }
     if (this.matchOver) return 'exit';
     const p = this.world.players.get(this.world.localPlayerId);
     if (p && p.health <= 0) return 'dead';
     return 'continue';
+  }
+
+  /** Apply the local command to the predicted marine NOW (instant movement/turn), buffer it
+   *  unacked for reconciliation, and decay the reconciliation smoothing offset. */
+  private predict(cmd: TicCommand): void {
+    const p = this.world.players.get(this.world.localPlayerId);
+    if (!p || !this.level) return;
+    // Strip the decaying correction offset → the true predicted anchor, advance it, then
+    // re-apply the (now smaller) offset for rendering, so a past correction keeps easing out.
+    p.x -= this.smoothX;
+    p.y -= this.smoothY;
+    applyPlayerMovement(p, this.level, cmd, TICS_PER_STEP);
+    this.pending.push(cmd);
+    this.fireView = cmd.fire ? NETCODE.FIRE_VIEW_LATCH_TICS : Math.max(0, this.fireView - 1);
+
+    this.smoothX *= NETCODE.RECONCILE_SMOOTH_DECAY;
+    this.smoothY *= NETCODE.RECONCILE_SMOOTH_DECAY;
+    if (Math.hypot(this.smoothX, this.smoothY) < NETCODE.RECONCILE_SMOOTH_EPS) {
+      this.smoothX = 0;
+      this.smoothY = 0;
+    }
+    p.x += this.smoothX;
+    p.y += this.smoothY;
+  }
+
+  /** Reconcile the predicted marine against the authoritative snapshot: take its state +
+   *  velocity, drop acked commands, replay the still-unacked ones on top. The residual
+   *  between where we were drawing and the corrected anchor is kept as a decaying offset so
+   *  the marine never visibly snaps (invisible when prediction matched). */
+  private reconcile(me: PlayerSnap): void {
+    const p = this.world.players.get(this.world.localPlayerId);
+    if (!p || !this.level) return;
+    const renderX = p.x;
+    const renderY = p.y;
+
+    p.x = me.x;
+    p.y = me.y;
+    p.angle = me.angle;
+    p.velX = me.vx;
+    p.velY = me.vy;
+    p.health = me.health;
+    p.armor.points = me.armor;
+    p.currentWeapon = me.weapon;
+    p.bob = me.bob;
+    p.active = me.health > 0;
+
+    this.pending = this.pending.filter((c) => c.seq > me.seq);
+    for (const c of this.pending) applyPlayerMovement(p, this.level, c, TICS_PER_STEP);
+
+    this.smoothX = renderX - p.x;
+    this.smoothY = renderY - p.y;
+    // A correction larger than a cell is a real teleport (respawn/lift/telefrag) — snap it.
+    if (Math.hypot(this.smoothX, this.smoothY) > NETCODE.RECONCILE_SNAP_MU) {
+      this.smoothX = 0;
+      this.smoothY = 0;
+    }
+    p.x += this.smoothX;
+    p.y += this.smoothY;
+  }
+
+  /** Render the remote world at `now − INTERP_DELAY`, lerping between the two snapshots that
+   *  bracket that render time. Holds at the newest snapshot when the buffer runs dry (a late
+   *  or dropped snapshot) rather than extrapolating into a guess. */
+  private interpolate(): void {
+    if (!this.level || this.snapBuf.length === 0) return;
+    const target = this.now() - NETCODE.INTERP_DELAY_MS;
+    let aIdx = 0;
+    for (let i = 0; i < this.snapBuf.length; i++) {
+      if (this.snapBuf[i]!.recv <= target) aIdx = i;
+    }
+    const a = this.snapBuf[aIdx]!;
+    const b = this.snapBuf[Math.min(aIdx + 1, this.snapBuf.length - 1)]!;
+    const span = b.recv - a.recv;
+    const t = span > 0 ? Math.min(1, Math.max(0, (target - a.recv) / span)) : 0;
+    interpolateRemotes(this.world, this.level, a.snap, b.snap, t, this.world.localPlayerId, this.avatarMeta);
+  }
+
+  /** Seed the predicted local marine at its authoritative spawn the first time we resolve
+   *  which marine is ours, so prediction starts from the right place with no offset. */
+  private seedLocal(me: PlayerSnap): void {
+    let p = this.world.players.get(me.id);
+    if (!p) {
+      p = createPlayer(me.id, me.x, me.y, me.angle);
+      this.world.players.set(me.id, p);
+    }
+    p.x = me.x;
+    p.y = me.y;
+    p.angle = me.angle;
+    p.velX = me.vx;
+    p.velY = me.vy;
+    p.health = me.health;
+    p.armor.points = me.armor;
+    p.currentWeapon = me.weapon;
+    this.pending = [];
+    this.smoothX = 0;
+    this.smoothY = 0;
   }
 
   teardownLevel(): void {
@@ -178,24 +330,40 @@ export class RemoteSession implements Session {
 
   private onSnapshot(snap: Snapshot): void {
     if (!this.level) return;
-    // Resolve which marine is ME (sessionId travels on every PlayerSnap) before applying,
-    // so the local point-of-view is never pruned by the apply pass.
+    // Drop stale/reordered arrivals — jitter can deliver an older snapshot late, and the
+    // buffer + reconciliation must only ever move forward in server time.
+    if (snap.tick <= this.lastSnapTick) return;
+    this.lastSnapTick = snap.tick;
+
+    // Resolve which marine is ME (sessionId travels on every PlayerSnap); seed the predicted
+    // local marine from its authoritative spawn the first time we find it.
     if (!this.localResolved) {
       const mine = snap.players.find((p) => p.sid === this.identity.sessionId);
       if (mine) {
         this.world.localPlayerId = mine.id;
         this.localResolved = true;
+        this.seedLocal(mine);
       }
     }
-    applySnapshot(this.world, this.level, snap);
-    this.avatarMeta.clear();
-    for (const ps of snap.players) {
-      this.avatarMeta.set(ps.id, { state: ps.state, name: ps.name, color: ps.color });
-    }
+
+    this.snapBuf.push({ recv: this.now(), snap });
+    while (this.snapBuf.length > NETCODE.SNAPSHOT_BUFFER) this.snapBuf.shift();
+
     const me = snap.players.find((p) => p.id === this.world.localPlayerId);
     if (me) {
       this.localSeq = me.seq;
       this.localState = me.state;
+    }
+
+    if (this.localResolved && me) {
+      this.reconcile(me); // local marine: authoritative + replay unacked (interpolation skips it)
+    } else {
+      // Cold start (our marine not resolved yet): mirror the newest snapshot raw so the world
+      // isn't empty before prediction + interpolation take over.
+      applySnapshot(this.world, this.level, snap);
+      for (const ps of snap.players) {
+        this.avatarMeta.set(ps.id, { state: ps.state, name: ps.name, color: ps.color });
+      }
     }
   }
 
