@@ -171,6 +171,14 @@ export class Menus {
     // While rebinding or typing a join field, a window listener owns the keys; freeze nav.
     if (this.capturing || this.typing) return null;
     const frame = this.stack[this.stack.length - 1]!;
+
+    // Networked match start is server-driven + asynchronous: once `matchStarting` arrives
+    // (the host pressed START and the authority accepted), hand off to the networked match
+    // for the host AND every joiner alike — no extra keypress on either side.
+    const ms = this.ctx.lobby?.matchStarting;
+    if (frame.page === 'mpLobby' && this.ctx.lobby?.phase === 'starting' && ms) {
+      return { type: 'mpStartMatch', config: ms.config, seed: ms.seed, levelId: ms.levelId };
+    }
     const items = this.items(frame.page);
     const n = items.length;
     if (n === 0) {
@@ -421,10 +429,10 @@ export class Menus {
         label: 'START MATCH',
         value: lobby.canStart ? undefined : 'WAIT ALL READY',
         onSelect: () => {
-          if (!lobby.canStart) return null;
-          lobby.start();
-          const ms = lobby.matchStarting;
-          return ms ? { type: 'mpStartMatch', config: ms.config, seed: ms.seed, levelId: ms.levelId } : null;
+          // Just ask the authority to start; the actual handoff fires for everyone in
+          // update() once the server's matchStarting broadcast lands (it is async).
+          if (lobby.canStart) lobby.start();
+          return null;
         },
       });
     }

@@ -225,6 +225,9 @@ export interface IWorld {
   pickups: Pickup[];
   level: ILevelRuntime | null;
   skill: SkillId; // active skill — drives the player-damage multiplier (loadLevel sets it)
+  /** Co-op friendly-fire rule (multiplayer-plan §4): false ⇒ a player's attack never
+   *  damages another player. Default true (single-player / deathmatch). */
+  friendlyFire: boolean;
   /** Host-authoritative id allocation (B3): only the authority calls this. */
   allocId(): number;
   removeMonster(id: number): void;

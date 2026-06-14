@@ -12,6 +12,20 @@ import { ITEMS_BY_ID, SKILLS } from '../data';
 
 const SKILL_BIT: Record<'easy' | 'normal' | 'hard', number> = { easy: 1, normal: 2, hard: 4 };
 
+/** Co-op spawn fan-out around the single playerStart. Index 0 = no offset (the local /
+ *  single-player marine stands exactly on the spawn); others step out on the cardinals
+ *  ~one player-diameter away so up to four co-op marines don't telefrag at level start. */
+function coopSpawnOffset(index: number): { dx: number; dy: number } {
+  if (index === 0) return { dx: 0, dy: 0 };
+  const ring = [
+    { dx: 40, dy: 0 },
+    { dx: -40, dy: 0 },
+    { dx: 0, dy: 40 },
+    { dx: 0, dy: -40 },
+  ];
+  return ring[(index - 1) % ring.length]!;
+}
+
 /** Does a thing's MTF skill bitmask include the chosen skill? A thing with no bit
  *  for any single-player skill (e.g. skill 0 / multiplayer-only) never spawns. */
 export function thingSpawnsAtSkill(mtf: number, skill: SkillId): boolean {
@@ -37,16 +51,23 @@ export function loadLevel(
   world.level = level;
   world.skill = skill; // combat reads this to scale player damage (ITYTD takes half)
 
-  const p = world.player;
-  p.x = data.playerStart.x;
-  p.y = data.playerStart.y;
-  p.angle = degToRad(data.playerStart.angle);
-  p.velX = 0;
-  p.velY = 0;
-  p.active = true;
-  p.inventory.keys.blue = { card: false, skull: false };
-  p.inventory.keys.yellow = { card: false, skull: false };
-  p.inventory.keys.red = { card: false, skull: false };
+  // Place EVERY player at the start (multiplayer-plan B1/§3.6): co-op spreads them in a
+  // small ring around the single playerStart so they don't stack. The local/first player
+  // (index 0) sits exactly on the spawn, so offline single-player is unchanged.
+  const angle = degToRad(data.playerStart.angle);
+  let i = 0;
+  for (const p of world.players.values()) {
+    const off = coopSpawnOffset(i++);
+    p.x = data.playerStart.x + off.dx;
+    p.y = data.playerStart.y + off.dy;
+    p.angle = angle;
+    p.velX = 0;
+    p.velY = 0;
+    p.active = true;
+    p.inventory.keys.blue = { card: false, skull: false };
+    p.inventory.keys.yellow = { card: false, skull: false };
+    p.inventory.keys.red = { card: false, skull: false };
+  }
 
   for (const t of data.things) {
     if (!thingSpawnsAtSkill(t.skill, skill)) continue;

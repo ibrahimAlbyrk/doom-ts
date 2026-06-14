@@ -12,6 +12,7 @@ import type { IWorld, ILevelRuntime, MapData, SkillId } from '../core';
 import type { CombatBus } from '../combat';
 import type { WeaponView } from '../weapons';
 import type { TicCommand, TicResult } from '../game/session';
+import type { RemoteAvatar } from './snapshot';
 
 export type { TicCommand, TicResult } from '../game/session';
 
@@ -56,4 +57,9 @@ export interface Session {
   advanceAfterIntermission(): 'next' | 'victory';
   /** The id of the level following the current one (intermission "next" label). */
   peekNextLevelId(): string | null;
+
+  /** ONLINE only: the OTHER co-op marines to draw as billboard avatars + nametags this
+   *  frame (the local player stays first-person). Offline LocalSession omits it — a
+   *  single-player world has no other players to render. */
+  remotePlayers?(): RemoteAvatar[];
 }

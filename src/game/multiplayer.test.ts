@@ -155,7 +155,7 @@ function testPerPlayerPickups(): void {
 
   const giver = new WeaponSystem(world, new Rng(1), combat); // local player's giver (unused by health)
   spawnPickup(world, 2011, p1.x, p1.y); // a stimpack sitting on p1
-  updateItems({ world, weapons: giver, skill: 3, events: game }, 1);
+  updateItems({ world, giverFor: () => giver, skill: 3, events: game }, 1);
 
   ok(p1.health === 60 && p0.health === 50, 'only the touching player (p1) is healed by the stimpack; p0 is unchanged');
   ok(world.pickups.length === 0, 'the collected pickup is removed from the world');

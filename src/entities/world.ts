@@ -13,6 +13,10 @@ export class World implements IWorld {
   pickups: Pickup[] = [];
   level: ILevelRuntime | null = null;
   skill: SkillId = 3; // HMP baseline; loadLevel overwrites with the chosen skill per session
+  /** Co-op rule (multiplayer-plan §3.6 / §4): false makes player→OTHER-player damage a
+   *  no-op. Default true = single-player / deathmatch (no gating; self-splash always hurts).
+   *  The authoritative server flips this off when seeding a co-op match. */
+  friendlyFire = true;
 
   private nextId = 0;
 

@@ -4,3 +4,5 @@
 export * from './session';
 export * from './local-session';
 export * from './remote-session';
+export * from './snapshot';
+export * from './colyseus-transport';

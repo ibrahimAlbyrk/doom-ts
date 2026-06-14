@@ -14,10 +14,32 @@ import type {
 } from '../core';
 import { ENEMIES, ITEMS_BY_ID, DEATH_FRAMES } from '../data';
 import { bobAmount, viewBob, type WeaponView } from '../weapons';
+import type { AvatarState, RemoteAvatar } from '../session/snapshot';
 
 const DEG45 = Math.PI / 4;
 const WALK_FRAMES = ['A', 'B', 'C', 'D'] as const;
 const ANIM_TICS_PER_WALK = 4; // tics each walk frame holds
+
+/** Freedoom PLAY (marine) sprite prefix — reused for every remote co-op player. */
+const PLAYER_SPRITE = 'PLAY';
+
+/** Map a remote marine's synced intent to a PLAY frame letter: walk PLAYA–D (client clock),
+ *  fire PLAYE, pain PLAYG, death PLAYH (downed). pickFrame degrades any gap gracefully. */
+function playerFrameLetter(state: AvatarState, animTic: number): string {
+  switch (state) {
+    case 'walk':
+      return WALK_FRAMES[Math.floor(animTic / ANIM_TICS_PER_WALK) % 4]!;
+    case 'fire':
+      return 'E';
+    case 'pain':
+      return 'G';
+    case 'dead':
+      return 'H';
+    case 'idle':
+    default:
+      return 'A';
+  }
+}
 // Spread a monster's death frames across this window, matching the AI settle time
 // (ai DEATH_SETTLE_TICS) so the animation lands on the final corpse as it goes 'dead'.
 const DEATH_ANIM_TICS = 20;
@@ -101,6 +123,7 @@ export function buildRenderScene(
   fovRatio: number,
   playViewHeight?: number,
   viewFloorOffset = 0,
+  remotePlayers: readonly RemoteAvatar[] = [],
 ): RenderScene {
   const p = world.player;
   const dirX = Math.cos(p.angle);
@@ -122,6 +145,21 @@ export function buildRenderScene(
       y: m.y / CELL_SIZE,
       frame,
       light: cellLight(level, m.x, m.y),
+      fullbright: false,
+      vMove: 0,
+    });
+  }
+
+  // Other co-op marines: billboards in the same 8-rotation sprite system the monsters
+  // use (engine.md §4), facing chosen from camera→player angle, frame from synced intent.
+  for (const rp of remotePlayers) {
+    const frame = pickFrame(assets, PLAYER_SPRITE, playerFrameLetter(rp.state, animTic), rotationFor(p.x, p.y, rp));
+    if (!frame) continue;
+    sprites.push({
+      x: rp.x / CELL_SIZE,
+      y: rp.y / CELL_SIZE,
+      frame,
+      light: cellLight(level, rp.x, rp.y),
       fullbright: false,
       vMove: 0,
     });

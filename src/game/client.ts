@@ -6,13 +6,21 @@
 // this is everything that needs a canvas/audio/DOM. See docs/multiplayer-plan.md §0.1.
 import type { GameContext } from './types';
 import type { Action, ScreenTint, PowerupKind, SkillId } from '../core';
-import { FIXED_STEP, SECONDS_PER_TIC } from '../core';
+import { FIXED_STEP, SECONDS_PER_TIC, CELL_SIZE, VIEW_HEIGHT } from '../core';
 import { cellOf } from '../world';
 import { mapDataFor } from '../levels';
 import { GameSoundEvents, type AudioManager } from '../audio';
 import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
-import { LocalSession, type Session, type TicCommand, type TicResult } from '../session';
-import { LobbyClient, MockLobbyTransport, type MatchConfig } from '../lobby';
+import {
+  LocalSession,
+  RemoteSession,
+  ColyseusTransport,
+  type Session,
+  type RemoteAvatar,
+  type TicCommand,
+  type TicResult,
+} from '../session';
+import { LobbyClient, type MatchConfig } from '../lobby';
 import { buildRenderScene } from './scene';
 import { saveResolution } from './resolution-store';
 
@@ -28,19 +36,34 @@ const MOUSE_RADIANS_PER_PX = 0.0022;
 const VIEW_FLOOR_LERP = 0.3;
 const VIEW_FLOOR_MIN_STEP = 2; // mu per doom-tic
 
+/** Default match-server endpoint (same host, Colyseus port). The lobby connects lazily
+ *  on host/join, so offline single-player never touches the network. */
+const MP_SERVER_URL = `ws://${location.hostname || 'localhost'}:2567`;
+/** Nametag tint per LOBBY_COLORS index (GREEN, INDIGO, BROWN, RED). */
+const NAMETAG_COLORS = ['#56c84c', '#6f78ff', '#b9803f', '#ff4d4d'] as const;
+/** Nominal PLAY sprite texel height — for placing a nametag just above the avatar's head. */
+const AVATAR_SPRITE_H = 56;
+
 export class GameClient {
   readonly cache: TextureCache;
   readonly hud: HudController;
   readonly intermission: Intermission;
   readonly menus: Menus;
-  /** The client lobby state machine the multiplayer menus drive. Backed by a MOCK
-   *  transport today (no network) so the whole lobby flow is navigable; P2 swaps in the
-   *  real LobbyTransport. The mock injects a fake second player so ready-up + the
-   *  all-ready START gate are demonstrable solo (docs/multiplayer-plan.md §3). */
+  /** The client lobby state machine the multiplayer menus drive. Backed by a real
+   *  Colyseus-room transport (multiplayer-plan §3 / P2): host/join hit the match server,
+   *  ready-up + the all-ready START gate run against the authority. Connecting is lazy
+   *  (only on host/join), so offline single-player never needs the server. */
   readonly lobby: LobbyClient;
 
-  /** The authority the client renders/steps. Offline default = a LocalSession. */
-  private readonly session: Session;
+  /** The shared Colyseus connection backing BOTH the lobby and (once a match starts) the
+   *  RemoteSession's gameplay channel — one room for the whole online session. */
+  private readonly transport: ColyseusTransport;
+
+  /** The offline authority the client boots with; kept so teardown can fall back to it
+   *  after an online match (so single-player still works after playing co-op). */
+  private readonly localSession: LocalSession;
+  /** The authority the client renders/steps — LocalSession offline, RemoteSession online. */
+  private session: Session;
   /** The concrete audio manager (ctx.audio is the narrower core Audio interface). */
   private readonly audio: AudioManager;
   /** Rebuilt per level — binds the level's combat bus to local SFX playback. */
@@ -57,14 +80,13 @@ export class GameClient {
 
   constructor(private readonly ctx: GameContext) {
     this.audio = ctx.audio as AudioManager;
-    this.session = new LocalSession(ctx);
+    this.localSession = new LocalSession(ctx);
+    this.session = this.localSession;
+    this.transport = new ColyseusTransport(MP_SERVER_URL);
     this.cache = new TextureCache(ctx.assets);
     this.hud = new HudController(this.cache, ctx.events);
     this.intermission = new Intermission(this.cache);
-    this.lobby = new LobbyClient(
-      new MockLobbyTransport({ fakeJoinDelayMs: 700, fakeReadyDelayMs: 1400 }),
-      { name: 'PLAYER 1' },
-    );
+    this.lobby = new LobbyClient(this.transport, { name: 'PLAYER 1' });
     this.menus = new Menus(this.cache, {
       config: ctx.config,
       getBindings: () => ctx.input.getBindings(),
@@ -100,18 +122,17 @@ export class GameClient {
   }
 
   /**
-   * TODO(P2 network worker): the lobby has reached ALL_READY and the host pressed START.
-   * This is the single handoff point: construct a RemoteSession over the real
-   * SessionTransport, seed it from `config` (skill/episode/level/mode per
-   * docs/multiplayer-plan.md §3.6), swap it in for the LocalSession, and enter the
-   * networked PLAYING sub-mode. Until then the lobby is fully navigable but the match
-   * itself is a no-op stub — single-player offline is the only path that actually plays.
+   * The lobby reached ALL_READY and the host pressed START (the server broadcast
+   * matchStarting). The single handoff point: build a RemoteSession over the SAME Colyseus
+   * room the lobby used, load the MatchConfig's level locally so the renderer/HUD have
+   * geometry, swap it in for the LocalSession, and enter networked PLAYING. The server is
+   * authoritative — snapshots fill the world in. Single-player offline is untouched.
    */
-  startNetworkedMatch(config: MatchConfig): void {
-    console.warn(
-      '[MP] startNetworkedMatch: networked match start lands in P2 — handing config to a RemoteSession is not wired yet.',
-      config,
-    );
+  startNetworkedMatch(_config: MatchConfig, levelId: string): void {
+    const remote = new RemoteSession(this.transport);
+    remote.enterMatch(levelId);
+    this.session = remote;
+    this.onLevelLoaded();
   }
 
   teardownLevel(): void {
@@ -120,6 +141,9 @@ export class GameClient {
     this.audio.stopAllSfx();
     this.audio.stopMusic();
     this.session.teardownLevel();
+    // After an online match, fall back to the offline authority so a subsequent
+    // single-player game runs locally again (the RemoteSession is single-use).
+    if (this.session !== this.localSession) this.session = this.localSession;
   }
 
   beginIntermission(): void {
@@ -257,6 +281,8 @@ export class GameClient {
     // viewZ makes the renderer's eyeZ glide across tiers.
     const p = world.player;
     const viewFloorOffset = this.smoothViewFloorZ - level.floorHeightAt(cellOf(p.x), cellOf(p.y));
+    // Other co-op marines (online only) render as billboard avatars through the sprite path.
+    const remotes = this.session.remotePlayers?.() ?? [];
     const scene = buildRenderScene(
       world,
       level,
@@ -266,9 +292,11 @@ export class GameClient {
       config.fovRatio,
       playViewHeight,
       viewFloorOffset,
+      remotes,
     );
     scene.tint = this.computeTint();
     renderer.render(scene, alpha);
+    if (remotes.length > 0) this.drawNametags(ctx2d, remotes, playViewHeight);
     // Automap overlay sits over the world but under the HUD bar (classic DOOM look).
     if (this.automapOn) {
       drawAutomap(ctx2d, world, world.player, config.internalWidth, config.internalHeight, {
@@ -276,6 +304,53 @@ export class GameClient {
       });
     }
     this.hud.composite(renderer, world);
+  }
+
+  /**
+   * Depth-correct nametags over each remote marine: project its world position with the
+   * same camera math the sprite pass uses, place a centered label just above the avatar's
+   * head, tinted by its lobby color. Drawn on the display context after the world blit.
+   */
+  private drawNametags(ctx2d: CanvasRenderingContext2D, remotes: readonly RemoteAvatar[], viewH: number): void {
+    const level = this.session.currentLevel;
+    if (!level) return;
+    const { config } = this.ctx;
+    const p = this.session.world.player;
+    const W = config.internalWidth;
+    const H = viewH;
+    const dirX = Math.cos(p.angle);
+    const dirY = Math.sin(p.angle);
+    const planeX = -dirY * config.fovRatio;
+    const planeY = dirX * config.fovRatio;
+    const invDet = 1 / (planeX * dirY - dirX * planeY);
+    const camX = p.x / CELL_SIZE;
+    const camY = p.y / CELL_SIZE;
+    const eyeZ = level.floorHeightAt(cellOf(p.x), cellOf(p.y)) / CELL_SIZE + VIEW_HEIGHT / CELL_SIZE;
+    const half = H / 2;
+
+    ctx2d.save();
+    ctx2d.font = '6px monospace';
+    ctx2d.textAlign = 'center';
+    ctx2d.textBaseline = 'bottom';
+    ctx2d.lineWidth = 2;
+    for (const r of remotes) {
+      const dx = r.x / CELL_SIZE - camX;
+      const dy = r.y / CELL_SIZE - camY;
+      const tX = invDet * (dirY * dx - dirX * dy);
+      const tY = invDet * (-planeY * dx + planeX * dy); // depth
+      if (tY <= 0.1) continue;
+      const screenX = (W / 2) * (1 + tX / tY);
+      if (screenX < -20 || screenX > W + 20) continue;
+      const scale = H / tY;
+      const spriteFloorZ = level.floorHeightAt(cellOf(r.x), cellOf(r.y)) / CELL_SIZE;
+      const headY = half + (eyeZ - spriteFloorZ) * scale - (AVATAR_SPRITE_H / CELL_SIZE) * scale;
+      const label = r.name || `P${r.id}`;
+      ctx2d.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx2d.strokeText(label, screenX, Math.max(8, headY - 2));
+      ctx2d.fillStyle = NAMETAG_COLORS[r.color] ?? '#ffffff';
+      ctx2d.fillText(label, screenX, Math.max(8, headY - 2));
+    }
+    ctx2d.restore();
   }
 
   /**

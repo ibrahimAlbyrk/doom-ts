@@ -60,11 +60,17 @@ export class WeaponSystem {
   private bfgBallId: number | null = null;
   private readonly unsub: (() => void) | null;
 
+  /** The player this system drives. Defaults to the local player (offline single-player /
+   *  the client view); the authoritative server constructs one system per player id. */
+  private readonly playerId: number;
+
   constructor(
     private readonly world: IWorld,
     private readonly rng: Rng,
     private readonly events?: CombatBus,
+    playerId?: number,
   ) {
+    this.playerId = playerId ?? world.localPlayerId;
     // The BFG tracers fire the moment its ball detonates (a combat projectile:impact).
     this.unsub = events
       ? events.on('projectile:impact', (p) => {
@@ -253,7 +259,13 @@ export class WeaponSystem {
   // ── internals ────────────────────────────────────────────────────────────────
 
   private get player(): Player {
-    return this.world.player;
+    return this.world.players.get(this.playerId)!;
+  }
+
+  /** True while a shot's fire animation is playing — the authoritative server reads
+   *  this to set a remote avatar's "firing" state in the snapshot (PLAY attack frame). */
+  get firing(): boolean {
+    return this.fireAnimTics > 0;
   }
 
   private cycle(dir: 1 | -1): boolean {

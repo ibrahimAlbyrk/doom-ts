@@ -26,10 +26,13 @@ export interface ItemGiver {
   giveBackpack(): boolean;
 }
 
-/** Everything the pickup system needs threaded in from the game loop each tic. */
+/** Everything the pickup system needs threaded in from the game loop each tic.
+ *  `giverFor(playerId)` resolves the ammo/weapon/backpack giver for the player who
+ *  touched a pickup, so the grant lands on the right inventory in N-player co-op
+ *  (each player owns its own WeaponSystem on the authoritative server, P2). */
 export interface PickupContext {
   world: IWorld;
-  weapons: ItemGiver;
+  giverFor: (playerId: number) => ItemGiver;
   skill: SkillId;
   events?: EventBus<GameEventMap>;
 }
@@ -73,17 +76,18 @@ function touches(player: Player, pickup: Pickup): boolean {
  *  ammo/weapon/backpack route through the injected WeaponSystem (P1: the local
  *  player's — per-player weapon systems land with the authoritative server, P2). */
 export function applyItem(ctx: PickupContext, def: ItemDef, player: Player): boolean {
+  const giver = ctx.giverFor(player.id);
   switch (def.kind) {
     case 'health':
       return applyHealth(player, def);
     case 'armor':
       return applyArmor(player, def);
     case 'ammo':
-      return applyAmmo(ctx, def);
+      return applyAmmo(ctx, giver, def);
     case 'weapon':
-      return applyWeapon(ctx, def);
+      return applyWeapon(giver, def);
     case 'backpack':
-      ctx.weapons.giveBackpack();
+      giver.giveBackpack();
       return true;
     case 'key':
       return applyKey(ctx, def, player);
@@ -110,15 +114,15 @@ function applyArmor(player: Player, def: ItemDef): boolean {
   return giveArmor(player, def.armorPoints ?? 0, def.armorFactor ?? ARMOR_GREEN_FACTOR);
 }
 
-function applyAmmo(ctx: PickupContext, def: ItemDef): boolean {
+function applyAmmo(ctx: PickupContext, giver: ItemGiver, def: ItemDef): boolean {
   if (def.ammoType === undefined || def.ammoAmount === undefined) return false;
   const amount = def.ammoAmount * SKILLS[ctx.skill].ammoMultiplier;
-  return ctx.weapons.giveAmmo(def.ammoType, amount) > 0;
+  return giver.giveAmmo(def.ammoType, amount) > 0;
 }
 
-function applyWeapon(ctx: PickupContext, def: ItemDef): boolean {
+function applyWeapon(giver: ItemGiver, def: ItemDef): boolean {
   if (def.weapon === undefined) return false;
-  ctx.weapons.giveWeapon(def.weapon); // grants first-pickup ammo, emits weapon:pickedUp, auto-switches
+  giver.giveWeapon(def.weapon); // grants first-pickup ammo, emits weapon:pickedUp, auto-switches
   return true;
 }
 

@@ -31,6 +31,17 @@ export function applyDamage(
   origin?: DamageOrigin,
 ): void {
   if (amount <= 0 || !target.active) return;
+  // Co-op friendly fire: a player's attack never damages ANOTHER player (own splash,
+  // sourceId === target.id, still hurts). No-op only when FF is off (server co-op seed);
+  // single-player / deathmatch leave world.friendlyFire true, so this never trips there.
+  if (
+    sourceFaction === 'player' &&
+    world.friendlyFire === false &&
+    sourceId !== target.id &&
+    isPlayer(world, target)
+  ) {
+    return;
+  }
   if (isPlayer(world, target)) {
     applyPlayerDamage(world, target, amount, sourceId, sourceFaction, events, origin);
   } else {

@@ -9,7 +9,7 @@
 //
 // Per-level systems are rebuilt on every startLevel and torn down first, so combat
 // subscriptions never leak between maps. Shared services live on the SimContext.
-import type { SimContext, SkillId, MapData, ILevelRuntime, IWorld } from '../core';
+import type { SimContext, SkillId, MapData, ILevelRuntime, IWorld, Player } from '../core';
 import {
   CELL_SIZE,
   FIXED_STEP,
@@ -78,8 +78,13 @@ export interface SessionOptions {
 export class GameSession {
   private level: LevelRuntime | null = null;
   private combatBus: CombatBus | null = null;
-  private weapons: WeaponSystem | null = null;
+  /** One weapon system per player (B1): offline single-player is a map of size 1 (id 0);
+   *  the authoritative server drives one per connected marine. */
+  private readonly weapons = new Map<number, WeaponSystem>();
   private ai: MonsterAI | null = null;
+  /** The player whose command is currently being applied — so a gunshot's AI-noise
+   *  originates at the firing marine, not always the local one (set around weapons.update). */
+  private activePlayer: Player | null = null;
 
   private readonly presentation: boolean;
   private currentMapId = '';
@@ -90,8 +95,10 @@ export class GameSession {
   private totalKills = 0;
   private totalItems = 0;
   private totalSecrets = 0;
-  /** Last command seq applied (handed back in snapshots for reconciliation, P3a). */
+  /** Last command seq applied for the LOCAL player (snapshots/reconciliation, P3a). */
   private lastProcessedSeq = -1;
+  /** Last command seq applied per player id (the server stamps each snapshot, P3a). */
+  private readonly processedSeqByPlayer = new Map<number, number>();
 
   constructor(
     private readonly ctx: SimContext,
@@ -105,7 +112,7 @@ export class GameSession {
     ctx.events.on('pickup:collected', () => this.items++);
     ctx.events.on('secret:found', () => this.secrets++);
     ctx.events.on('weapon:fired', () => {
-      const p = this.ctx.world.player;
+      const p = this.activePlayer ?? this.ctx.world.player;
       this.ai?.noise(p.x, p.y);
     });
   }
@@ -133,7 +140,18 @@ export class GameSession {
   }
   /** The local player's screen-space weapon view-model (the presenter resolves sprites). */
   getWeaponView(): WeaponView | null {
-    return this.weapons?.getView() ?? null;
+    return this.weapons.get(this.ctx.world.localPlayerId)?.getView() ?? null;
+  }
+
+  /** Last command seq the authority applied for `playerId` (per-player reconciliation). */
+  processedSeqFor(playerId: number): number {
+    return this.processedSeqByPlayer.get(playerId) ?? -1;
+  }
+
+  /** Whether `playerId` is mid-shot this tick — the server maps it to the marine's
+   *  PLAY attack frame in the snapshot so remote avatars animate firing. */
+  isFiring(playerId: number): boolean {
+    return this.weapons.get(playerId)?.firing ?? false;
   }
   /** Per-level progress counters for the intermission tally (presenter builds the UI). */
   stats(): {
@@ -160,12 +178,12 @@ export class GameSession {
 
   /** Start a brand-new game at the episode's first level with a fresh loadout for
    *  every player (each keeps its id; loadLevel repositions them at the spawn). */
-  startNewGame(skill: SkillId): void {
+  startNewGame(skill: SkillId, levelId: string = EPISODE1.levels[0]!.id): void {
     this.ctx.skill = skill;
     const w = this.ctx.world;
     for (const id of [...w.players.keys()]) w.players.set(id, createPlayer(id, 0, 0, 0));
     this.ctx.episodeLevel = 0;
-    this.startLevel(EPISODE1.levels[0]!.id);
+    this.startLevel(levelId);
   }
 
   /** Load `mapId`: tear down the previous level's systems, build new ones, spawn. */
@@ -177,7 +195,12 @@ export class GameSession {
     this.currentMapId = mapId;
     this.combatBus = new CombatBus(this.ctx.events);
     this.level = loadLevel(this.ctx.world, data, this.ctx.skill, this.ctx.events);
-    this.weapons = new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus);
+    // One weapon system per player (each marine fires + carries its own loadout).
+    this.weapons.clear();
+    this.processedSeqByPlayer.clear();
+    for (const id of this.ctx.world.players.keys()) {
+      this.weapons.set(id, new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus, id));
+    }
     this.ai = createMonsterAI(this.ctx.world, this.ctx.rng, this.combatBus);
 
     this.computeTotals(data);
@@ -189,11 +212,18 @@ export class GameSession {
 
   teardownLevel(): void {
     this.ai?.dispose();
-    this.weapons?.dispose();
+    for (const w of this.weapons.values()) w.dispose();
+    this.weapons.clear();
     this.ai = null;
-    this.weapons = null;
     this.combatBus = null;
     this.level = null;
+  }
+
+  /** Register a freshly-added player's weapon system mid-level (authoritative server,
+   *  late co-op join). No-op offline (single-player never adds players mid-level). */
+  registerPlayer(playerId: number): void {
+    if (!this.level || !this.combatBus || this.weapons.has(playerId)) return;
+    this.weapons.set(playerId, new WeaponSystem(this.ctx.world, this.ctx.rng, this.combatBus, playerId));
   }
 
   /** Compute next level after the just-finished one: load it, or signal victory. */
@@ -215,55 +245,22 @@ export class GameSession {
   // ── one sim tic (canonical order) ───────────────────────────────────────────
 
   tic(cmd: TicCommand): TicResult {
-    const { world, rng, events } = this.ctx;
+    const { world } = this.ctx;
     const level = this.level;
-    const weapons = this.weapons;
-    const ai = this.ai;
-    const combat = this.combatBus;
-    if (!level || !weapons || !ai || !combat) return 'continue';
+    const localId = world.localPlayerId;
+    const weapons = this.weapons.get(localId);
+    if (!level || !weapons || !this.ai || !this.combatBus) return 'continue';
 
+    const p = world.players.get(localId)!;
     this.lastProcessedSeq = cmd.seq;
-    const p = world.player;
-    const T = TICS_PER_STEP;
+    this.processedSeqByPlayer.set(localId, cmd.seq);
 
-    // 1) turn (keyboard + folded mouse-look) + movement thrust with wall-slide collision.
-    const turnRate = degToRad(cmd.run ? TURN_RUN_DEG_PER_SEC : TURN_WALK_DEG_PER_SEC);
-    p.angle += cmd.turn * turnRate * FIXED_STEP + cmd.lookTurn;
+    // Apply the local marine's command, then simulate the shared world once. For a
+    // size-1 players map (offline single-player) this is the exact canonical order +
+    // result the original single-stream tic produced.
+    this.applyPlayerInput(p, weapons, cmd);
+    this.simulateWorld();
 
-    const thrust = cmd.run ? PLAYER_THRUST_RUN : PLAYER_THRUST_WALK;
-    if (cmd.forward !== 0) applyThrust(p, p.angle, thrust * cmd.forward, T);
-    if (cmd.strafe !== 0) applyThrust(p, p.angle + Math.PI / 2, thrust * cmd.strafe, T);
-    stepMovement(p, level, T);
-
-    // 2) use (doors + switches), 3) fire + weapon switching.
-    if (cmd.use) this.tryUse();
-
-    if (cmd.fire) weapons.startFire();
-    else weapons.stopFire();
-    if (cmd.weaponSlot > 0) weapons.selectSlot(cmd.weaponSlot);
-    if (cmd.weaponCycle > 0) weapons.nextWeapon();
-    else if (cmd.weaponCycle < 0) weapons.prevWeapon();
-
-    // 4) weapons (fires hitscan/melee/projectile; emits weapon:fired → ai.noise).
-    weapons.update(T);
-    // 5) AI, 6) projectiles.
-    ai.update(T);
-    updateProjectiles(world, rng, combat, T);
-
-    // 7) world dynamics: doors/lifts (non-crushing for ANY player) + per-player
-    //    walkover triggers (B7) — any player boards a lift / trips an exit/teleporter.
-    updateDoors(level, FIXED_STEP, (cx, cy) => playerInCell(world, cx, cy), events);
-    for (const player of world.players.values()) checkWalkoverTriggers(level, player, events);
-
-    // 8) item pickups.
-    updateItems({ world, weapons, skill: this.ctx.skill, events }, T);
-
-    this.levelTimeTics += T;
-    // Advance the shared walk-bob phase off the level clock (DOOM leveltime). The eye
-    // bob and weapon bob both read p.bob, so they ride the same wave.
-    p.bob = bobPhase(this.levelTimeTics);
-
-    // 9) death + level exit.
     if (p.health <= 0) return 'dead';
     if (level.pendingExit) {
       level.pendingExit = null;
@@ -272,11 +269,89 @@ export class GameSession {
     return 'continue';
   }
 
-  /** Use-press: open a door or trip a switch-triggered exit/lift just ahead. */
-  private tryUse(): void {
+  /**
+   * Authoritative N-player step (the server's tick). Apply EVERY connected marine's
+   * latest command to its own entity, then simulate the shared world once — so all
+   * inputs land before AI/projectiles/doors/items resolve. Dead marines idle (no
+   * respawn in P2). Returns whether any player tripped a level exit.
+   */
+  stepNetwork(commands: Map<number, TicCommand>): { exit: boolean } {
+    const level = this.level;
+    if (!level || !this.ai || !this.combatBus) return { exit: false };
+
+    for (const [id, cmd] of commands) {
+      const player = this.ctx.world.players.get(id);
+      const weapons = this.weapons.get(id);
+      if (!player || !weapons || player.health <= 0) continue;
+      this.processedSeqByPlayer.set(id, cmd.seq);
+      this.applyPlayerInput(player, weapons, cmd);
+    }
+    this.simulateWorld();
+
+    if (level.pendingExit) {
+      level.pendingExit = null;
+      return { exit: true };
+    }
+    return { exit: false };
+  }
+
+  // ── one player's command + the shared world step ───────────────────────────
+
+  /** Apply ONE marine's command: turn (keyboard + folded mouse-look), movement thrust
+   *  with wall-slide collision, use, fire + weapon switching, then advance its weapon. */
+  private applyPlayerInput(p: Player, weapons: WeaponSystem, cmd: TicCommand): void {
+    const level = this.level!;
+    const T = TICS_PER_STEP;
+
+    const turnRate = degToRad(cmd.run ? TURN_RUN_DEG_PER_SEC : TURN_WALK_DEG_PER_SEC);
+    p.angle += cmd.turn * turnRate * FIXED_STEP + cmd.lookTurn;
+
+    const thrust = cmd.run ? PLAYER_THRUST_RUN : PLAYER_THRUST_WALK;
+    if (cmd.forward !== 0) applyThrust(p, p.angle, thrust * cmd.forward, T);
+    if (cmd.strafe !== 0) applyThrust(p, p.angle + Math.PI / 2, thrust * cmd.strafe, T);
+    stepMovement(p, level, T);
+
+    if (cmd.use) this.tryUse(p);
+
+    if (cmd.fire) weapons.startFire();
+    else weapons.stopFire();
+    if (cmd.weaponSlot > 0) weapons.selectSlot(cmd.weaponSlot);
+    if (cmd.weaponCycle > 0) weapons.nextWeapon();
+    else if (cmd.weaponCycle < 0) weapons.prevWeapon();
+
+    // weapons.update fires hitscan/melee/projectile + emits weapon:fired → ai.noise; the
+    // active marine is tracked so that noise originates at the shooter, not always p0.
+    this.activePlayer = p;
+    weapons.update(T);
+    this.activePlayer = null;
+  }
+
+  /** Simulate the shared world once after all inputs: AI, projectiles, doors/lifts
+   *  (non-crushing for ANY player), per-player walkover triggers (B7), item pickups,
+   *  and the level clock / per-player walk-bob phase. */
+  private simulateWorld(): void {
+    const { world, rng, events } = this.ctx;
+    const level = this.level!;
+    const T = TICS_PER_STEP;
+
+    this.ai!.update(T);
+    updateProjectiles(world, rng, this.combatBus!, T);
+
+    updateDoors(level, FIXED_STEP, (cx, cy) => playerInCell(world, cx, cy), events);
+    for (const player of world.players.values()) checkWalkoverTriggers(level, player, events);
+
+    updateItems({ world, giverFor: (id) => this.weapons.get(id)!, skill: this.ctx.skill, events }, T);
+
+    this.levelTimeTics += T;
+    // Advance every marine's shared walk-bob phase off the level clock (DOOM leveltime);
+    // the eye + weapon bob both read p.bob, so they ride one wave.
+    for (const player of world.players.values()) player.bob = bobPhase(this.levelTimeTics);
+  }
+
+  /** Use-press: open a door or trip a switch-triggered exit/lift just ahead of `p`. */
+  private tryUse(p: Player): void {
     const level = this.level;
     if (!level) return;
-    const p = this.ctx.world.player;
     const dirX = Math.cos(p.angle);
     const dirY = Math.sin(p.angle);
     for (const reach of USE_REACHES) {

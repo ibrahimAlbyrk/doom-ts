@@ -43,7 +43,7 @@ function rig(skill: SkillId = 3): Rig {
   world.player.x = 100;
   world.player.y = 100;
   const ws = new WeaponSystem(world, new Rng(0x1234), combat);
-  const r: Rig = { world, ctx: { world, weapons: ws, skill, events: game }, collected: [], keys: [], started: [], expired: [] };
+  const r: Rig = { world, ctx: { world, giverFor: () => ws, skill, events: game }, collected: [], keys: [], started: [], expired: [] };
   game.on('pickup:collected', (p) => r.collected.push(p.thingId));
   game.on('key:collected', (p) => r.keys.push(p.color));
   game.on('powerup:started', (p) => r.started.push(p.kind));
