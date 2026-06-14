@@ -10,14 +10,17 @@ import type {
   IWorld,
   ILevelRuntime,
   Monster,
+  EnemyDef,
 } from '../core';
-import { ENEMIES, ITEMS_BY_ID } from '../data';
+import { ENEMIES, ITEMS_BY_ID, DEATH_FRAMES } from '../data';
 import { bobAmount, viewBob, type WeaponView } from '../weapons';
 
 const DEG45 = Math.PI / 4;
 const WALK_FRAMES = ['A', 'B', 'C', 'D'] as const;
-const DEATH_FRAMES = ['H', 'I', 'J', 'K', 'L', 'M', 'N'] as const;
 const ANIM_TICS_PER_WALK = 4; // tics each walk frame holds
+// Spread a monster's death frames across this window, matching the AI settle time
+// (ai DEATH_SETTLE_TICS) so the animation lands on the final corpse as it goes 'dead'.
+const DEATH_ANIM_TICS = 20;
 
 function cellLight(level: ILevelRuntime, x: number, y: number): number {
   return level.lightAt(Math.floor(x / CELL_SIZE), Math.floor(y / CELL_SIZE));
@@ -49,7 +52,7 @@ function pickFrame(
   );
 }
 
-function monsterFrameLetter(m: Monster, animTic: number, assets: IAssetStore, prefix: string): string {
+function monsterFrameLetter(m: Monster, def: EnemyDef, assets: IAssetStore, animTic: number): string {
   switch (m.state) {
     case 'chase':
       return WALK_FRAMES[Math.floor(animTic / ANIM_TICS_PER_WALK) % 4]!;
@@ -60,17 +63,32 @@ function monsterFrameLetter(m: Monster, animTic: number, assets: IAssetStore, pr
       return 'G';
     case 'death':
     case 'gib':
-    case 'dead': {
-      // Only walk death frames this monster actually has a sprite for, so a dead
-      // monster never resolves to the standing 'A' frame and "stands up".
-      const avail = DEATH_FRAMES.filter((L) => assets.getSprite(prefix, L, 0) !== undefined);
-      if (avail.length === 0) return DEATH_FRAMES[DEATH_FRAMES.length - 1]!;
-      const idx = m.state === 'dead' ? avail.length - 1 : Math.min(avail.length - 1, Math.floor(m.stateTimer / 5));
-      return avail[idx]!;
-    }
+    case 'dead':
+      return corpseFrameLetter(m, def, assets);
     default:
       return 'A';
   }
+}
+
+/**
+ * Pick the frame for a dying/dead monster from its own death sequence (or x-death if
+ * it was gibbed), looked up at rotation 0. The sequence is animated across the settle
+ * window while dying, then the final flat corpse frame is held once dead. Only frames
+ * that actually exist are returned, so a corpse can never fall back to the standing 'A'.
+ */
+function corpseFrameLetter(m: Monster, def: EnemyDef, assets: IAssetStore): string {
+  const seqs = DEATH_FRAMES[def.type];
+  const gibbed = m.state === 'gib' || (m.state === 'dead' && m.health < -def.health);
+  const seq = gibbed && seqs.gib ? seqs.gib : seqs.death;
+  const target =
+    m.state === 'dead'
+      ? seq.length - 1
+      : Math.min(seq.length - 1, Math.floor((m.stateTimer / DEATH_ANIM_TICS) * seq.length));
+  // Hold the last frame that has a real sprite; never degrade to the upright 'A'.
+  for (let i = target; i >= 0; i--) {
+    if (assets.getSprite(def.sprite, seq[i]!, 0)) return seq[i]!;
+  }
+  return seq[seq.length - 1]!; // asset-verified data — unreachable fallback, still a corpse
 }
 
 /** Build the full RenderScene for this frame from the world + weapon view. */
@@ -94,7 +112,7 @@ export function buildRenderScene(
 
   for (const m of world.monsters) {
     const def = ENEMIES[m.type];
-    const frame = pickFrame(assets, def.sprite, monsterFrameLetter(m, animTic, assets, def.sprite), rotationFor(p.x, p.y, m));
+    const frame = pickFrame(assets, def.sprite, monsterFrameLetter(m, def, assets, animTic), rotationFor(p.x, p.y, m));
     if (!frame) continue;
     sprites.push({
       x: m.x / CELL_SIZE,

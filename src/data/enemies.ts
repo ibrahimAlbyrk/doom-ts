@@ -265,6 +265,27 @@ export const ENEMIES: Record<MonsterType, EnemyDef> = {
   },
 };
 
+/**
+ * Per-monster death animation frames (non-rotational, drawn at rotation 0), in play
+ * order with the LAST entry being the settled flat corpse. `gib` is the overkill
+ * (x-death) sequence — present only for monsters that have one. Letters are verified
+ * against the rotation-0 sprites that actually exist for each prefix, so a dying or
+ * dead monster always resolves to a real low corpse frame and never the standing 'A'.
+ */
+export const DEATH_FRAMES: Record<MonsterType, { death: string[]; gib?: string[] }> = {
+  zombieman: { death: ['H', 'I', 'J', 'K', 'L'], gib: ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U'] },
+  shotgunGuy: { death: ['H', 'I', 'J', 'K', 'L'], gib: ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U'] },
+  imp: { death: ['I', 'J', 'K', 'L', 'M'], gib: ['N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U'] },
+  demon: { death: ['I', 'J', 'K', 'L', 'M', 'N'] },
+  spectre: { death: ['I', 'J', 'K', 'L', 'M', 'N'] },
+  lostSoul: { death: ['G', 'H', 'I', 'J', 'K'] },
+  cacodemon: { death: ['G', 'H', 'I', 'J', 'K', 'L'] },
+  baron: { death: ['I', 'J', 'K', 'L', 'M', 'N', 'O'] },
+  hellKnight: { death: ['I', 'J', 'K', 'L', 'M', 'N', 'O'] },
+  cyberdemon: { death: ['H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'] },
+  spiderMastermind: { death: ['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'] },
+};
+
 /** Episode-1 (Knee-Deep in the Dead) core bestiary (doom-design §3). */
 export const EPISODE1_MONSTERS: MonsterType[] = [
   'zombieman',
