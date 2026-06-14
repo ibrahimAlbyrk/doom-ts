@@ -28,23 +28,28 @@ import { decodeDmx, encodeWav } from './lib/sound.ts';
 import {
   SPRITE_ROSTER,
   REQUIRED_SOUNDS,
+  MUSIC_TRACKS,
   isUiLump,
   fontLumpName,
   FONT_FIRST_CODE,
   FONT_LAST_CODE,
 } from './lib/roster.ts';
+import { extractMusic, MUSIC_RATE } from './lib/music.ts';
 import { FREEDOOM_LICENSE } from './lib/license.ts';
 
 const FREEDOOM_VERSION = '0.13.0';
 
-function parseArgs(): { wad: string } {
+function parseArgs(): { wad: string; musicWad: string } {
   const argv = process.argv.slice(2);
-  const i = argv.indexOf('--wad');
-  const wad =
-    i >= 0 && argv[i + 1]
-      ? argv[i + 1]!
-      : 'tools/extract-wad/.cache/freedoom-0.13.0/freedoom2.wad';
-  return { wad: resolve(process.cwd(), wad) };
+  const arg = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 && argv[i + 1] ? argv[i + 1]! : undefined;
+  };
+  const wad = arg('--wad') ?? 'tools/extract-wad/.cache/freedoom-0.13.0/freedoom2.wad';
+  // ExMy episode music lives in freedoom1.wad — default to its sibling of the art WAD.
+  const wadAbs = resolve(process.cwd(), wad);
+  const musicWad = arg('--music-wad') ?? wadAbs.replace(/freedoom2\.wad$/i, 'freedoom1.wad');
+  return { wad: wadAbs, musicWad: resolve(process.cwd(), musicWad) };
 }
 
 let bytesWritten = 0;
@@ -204,6 +209,31 @@ function emitSounds(ctx: Ctx): { sounds: AssetManifest['sounds']; missing: strin
   return { sounds, missing };
 }
 
+// ── Music (D_* MIDI/MUS lumps → looping WAV + index) ─────────────────────────
+// Rendered offline by the oscillator synth (lib/synth.ts). Emits a self-describing
+// index.json the runtime AudioManager reads — kept separate from manifest.json so the
+// frozen AssetManifest schema (which types music as OGG-only) is untouched.
+function emitMusic(ctx: Ctx, musicWadPath: string): { count: number; missing: string[] } {
+  // Episode music (D_E1Mx) is in freedoom1.wad; fall back to the art WAD if it has them.
+  const sourceWad =
+    existsSync(musicWadPath) && new WadFile(musicWadPath).has(MUSIC_TRACKS[0]!)
+      ? new WadFile(musicWadPath)
+      : ctx.wad;
+  const { tracks, missing } = extractMusic(sourceWad, MUSIC_TRACKS);
+
+  const index: { rate: number; tracks: Record<string, { path: string; durationSec: number }> } = {
+    rate: MUSIC_RATE,
+    tracks: {},
+  };
+  for (const t of tracks) {
+    const rel = `audio/music/${t.id}.wav`;
+    write(join(ctx.assetsDir, rel), t.wav);
+    index.tracks[t.id] = { path: rel, durationSec: Math.round(t.durationSec * 100) / 100 };
+  }
+  write(join(ctx.assetsDir, 'audio/music/index.json'), JSON.stringify(index, null, 2));
+  return { count: tracks.length, missing };
+}
+
 // ── Attribution (BSD notice + CREDITS) ───────────────────────────────────────
 function emitAttribution(ctx: Ctx, wadPath: string): string {
   const rel = 'THIRD-PARTY/freedoom-LICENSE.txt';
@@ -218,7 +248,7 @@ function emitAttribution(ctx: Ctx, wadPath: string): string {
 }
 
 function main(): void {
-  const { wad: wadPath } = parseArgs();
+  const { wad: wadPath, musicWad: musicWadPath } = parseArgs();
   if (!existsSync(wadPath)) {
     throw new Error(
       `freedoom2.wad not found at ${wadPath}. Download Freedoom 0.13.0 ` +
@@ -239,6 +269,7 @@ function main(): void {
   const ui = emitUi(ctx);
   const fonts = emitFont(ctx);
   const { sounds, missing: missingSounds } = emitSounds(ctx);
+  const music = emitMusic(ctx, musicWadPath);
 
   const manifest: AssetManifest = {
     meta: {
@@ -270,10 +301,12 @@ function main(): void {
   console.log(`ui graphics: ${Object.keys(ui).length}`);
   console.log(`font glyphs: ${glyphCount}`);
   console.log(`sounds:      ${Object.keys(sounds).length} (wav)`);
+  console.log(`music:       ${music.count}/${MUSIC_TRACKS.length} tracks (wav @ ${MUSIC_RATE}Hz)`);
   console.log(`total size:  ${(bytesWritten / 1024 / 1024).toFixed(2)} MiB`);
   console.log(`manifest:    ${manifestPath}`);
   if (missingSprites.length) console.log(`MISSING sprite prefixes: ${missingSprites.join(', ')}`);
   if (missingSounds.length) console.log(`MISSING required sounds: ${missingSounds.join(', ')}`);
+  if (music.missing.length) console.log(`MISSING music tracks: ${music.missing.join(', ')}`);
   console.log('\nsprite prefix → entity:');
   for (const { prefix, entity } of SPRITE_ROSTER) {
     const set = sprites[prefix];

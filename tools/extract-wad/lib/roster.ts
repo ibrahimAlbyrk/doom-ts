@@ -108,6 +108,10 @@ export const REQUIRED_SOUNDS: string[] = [
   'DSPUNCH', 'DSSAWHIT', 'DSDSHTGN', 'DSPLASMA', 'DSBFG',
 ];
 
+/** Per-level music lumps the levels reference (src/levels/maps/*.ts `music`). These are
+ *  Doom-1 episode tracks (ExMy names) and live in freedoom1.wad, not freedoom2.wad. */
+export const MUSIC_TRACKS: string[] = ['D_E1M1', 'D_E1M2', 'D_E1M3', 'D_E1M4'];
+
 /** UI / status-bar / HUD graphics (assets.md §3.11) — global-namespace lumps.
  *  STCFN* (font) is handled separately. */
 export function isUiLump(name: string): boolean {

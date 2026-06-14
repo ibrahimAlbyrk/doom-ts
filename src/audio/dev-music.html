@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- THROWAWAY DEV-HARNESS for music playback. Dev-only; not a build entry.
+     Open at: http://localhost:5173/src/audio/dev-music.html (vite dev), click a track
+     (user gesture resumes the AudioContext), and watch the live output RMS meter. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Music Dev Harness</title>
+    <style>
+      body { margin: 0; padding: 24px; background: #111; color: #9f9; font: 14px monospace; }
+      button { font: 13px monospace; margin: 2px; padding: 6px 10px; background: #222; color: #9f9; border: 1px solid #393; cursor: pointer; }
+      button:hover { background: #393; color: #000; }
+      .row { margin: 10px 0; }
+      .stat { color: #6cf; }
+      #rms { font-size: 22px; }
+    </style>
+  </head>
+  <body>
+    <h3>AudioManager.playMusic — verification harness</h3>
+    <div class="row">
+      <button data-track="D_E1M1">D_E1M1</button>
+      <button data-track="D_E1M2">D_E1M2</button>
+      <button data-track="D_E1M3">D_E1M3</button>
+      <button data-track="D_E1M4">D_E1M4</button>
+      <button id="stop">stopMusic</button>
+      <button id="mute">toggle mute</button>
+    </div>
+    <div class="row">music volume <input id="vol" type="range" min="0" max="1" step="0.05" value="0.7" /> <span id="volval" class="stat">0.70</span></div>
+    <div class="row">ctx: <span id="ctx" class="stat">-</span> · playing: <span id="playing" class="stat">false</span> · muted: <span id="muted" class="stat">false</span> · track: <span id="track" class="stat">-</span></div>
+    <div class="row">output RMS: <span id="rms" class="stat">0.0000</span> · peak RMS: <span id="peak" class="stat">0.0000</span></div>
+    <script type="module" src="./dev-music.ts"></script>
+  </body>
+</html>

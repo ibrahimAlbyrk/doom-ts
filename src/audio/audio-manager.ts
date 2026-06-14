@@ -36,6 +36,20 @@ const STORE_KEYS = {
   muted: 'doom.audio.muted',
 } as const;
 
+// Per-level music lives outside the frozen AssetManifest (which types music as OGG-only):
+// the extractor writes WAV tracks + this index, which AudioManager loads on demand.
+const MUSIC_ASSETS_BASE = '/assets/';
+const MUSIC_INDEX_PATH = 'audio/music/index.json';
+
+interface MusicIndexEntry {
+  path: string; // relative to the assets base, e.g. "audio/music/D_E1M1.wav"
+  durationSec: number;
+}
+interface MusicIndex {
+  rate: number;
+  tracks: Record<string, MusicIndexEntry>;
+}
+
 const DEFAULT_PRIORITY = 50;
 // Distance model (world/map units): full volume within CLOSE_DIST, linear falloff to
 // silence at MAX_DIST — roughly DOOM's S_CLOSE_DIST / S_CLIPPING_DIST.
@@ -50,6 +64,9 @@ export class AudioManager implements Audio {
   private sfxBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private musicSource: AudioBufferSourceNode | null = null;
+  private musicIndex: Record<string, MusicIndexEntry> | null = null;
+  private musicIndexLoad: Promise<void> | null = null;
+  private pendingMusicId: string | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly pool = new VoicePool();
 
@@ -137,13 +154,31 @@ export class AudioManager implements Audio {
     return this.pool.activeCount;
   }
 
-  // ── Music (secondary; no-op when the id was never loaded) ────────────────────
+  // ── Music (looping bus; tracks load on demand from the music index) ──────────
+  /** Start looping `id` on the music bus. The track is fetched + decoded on first use
+   *  (from the extractor's music index); unknown ids are a graceful no-op. Calling again
+   *  with a new id crossfades by replacing the source once the new track is ready. */
   playMusic(id: string, loop = true): void {
+    this.pendingMusicId = id;
+    const buf = this.buffers.get(id);
+    if (buf) {
+      this.startMusicSource(id, buf, loop);
+      return;
+    }
+    void this.loadAndPlayMusic(id, loop);
+  }
+
+  /** Stop the current track and cancel any in-flight track load. */
+  stopMusic(): void {
+    this.pendingMusicId = null;
+    this.stopMusicSource();
+  }
+
+  private startMusicSource(id: string, buf: AudioBuffer, loop: boolean): void {
     const ctx = this.ctx;
     if (!ctx || !this.musicBus) return;
-    const buf = this.buffers.get(id);
-    if (!buf) return; // no music in the manifest → graceful no-op
-    this.stopMusic();
+    if (this.pendingMusicId !== id) return; // superseded by a newer playMusic call
+    this.stopMusicSource();
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = loop;
@@ -152,7 +187,7 @@ export class AudioManager implements Audio {
     this.musicSource = src;
   }
 
-  stopMusic(): void {
+  private stopMusicSource(): void {
     if (!this.musicSource) return;
     this.musicSource.onended = null;
     try {
@@ -161,6 +196,52 @@ export class AudioManager implements Audio {
       // already stopped
     }
     this.musicSource = null;
+  }
+
+  private async loadAndPlayMusic(id: string, loop: boolean): Promise<void> {
+    const ctx = this.ensure();
+    try {
+      await this.ensureMusicIndex();
+      const entry = this.musicIndex?.[id];
+      if (!entry || this.pendingMusicId !== id) return; // unknown id / superseded
+      const raw = await (await fetch(MUSIC_ASSETS_BASE + entry.path)).arrayBuffer();
+      const buf = await ctx.decodeAudioData(raw);
+      this.buffers.set(id, buf);
+      this.startMusicSource(id, buf, loop);
+    } catch {
+      // fetch/decode failed → stay silent rather than throw into the game loop
+    }
+  }
+
+  private ensureMusicIndex(): Promise<void> {
+    if (this.musicIndex) return Promise.resolve();
+    if (!this.musicIndexLoad) {
+      this.musicIndexLoad = (async () => {
+        try {
+          const res = await fetch(MUSIC_ASSETS_BASE + MUSIC_INDEX_PATH);
+          this.musicIndex = res.ok ? ((await res.json()) as MusicIndex).tracks ?? {} : {};
+        } catch {
+          this.musicIndex = {};
+        }
+      })();
+    }
+    return this.musicIndexLoad;
+  }
+
+  /** True while a music track is playing — for debug HUDs and playback tests. */
+  get isMusicPlaying(): boolean {
+    return this.musicSource !== null;
+  }
+
+  /** Insert an AnalyserNode on the master output and return it (VU metering / tests). */
+  attachAnalyser(fftSize = 2048): AnalyserNode {
+    const ctx = this.ensure();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = fftSize;
+    this.master!.disconnect();
+    this.master!.connect(analyser);
+    analyser.connect(ctx.destination);
+    return analyser;
   }
 
   // ── Mixer (gain + mute, persisted) ───────────────────────────────────────────
