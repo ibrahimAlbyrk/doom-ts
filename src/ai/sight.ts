@@ -8,8 +8,12 @@ import { isAliveMonster, isAlivePlayer } from '../combat';
 import { hasLOS, inFrontCone, wake } from './targeting';
 import { SOUND_TRAVEL_CELLS } from './tuning';
 
-/** A_Look — true (and target set) if this monster can see the player right now. */
+/** A_Look — true (and target set) if this monster can see the player right now.
+ *  A dead/dying monster never sights: a corpse must never re-acquire a target or
+ *  wake, no matter who calls this (the update loop already skips it; this guards
+ *  every other caller too). */
 export function lookForTarget(world: IWorld, m: Monster): boolean {
+  if (!isAliveMonster(m)) return false;
   const player = world.player;
   if (!isAlivePlayer(player)) return false;
   if (!inFrontCone(m, player)) return false;

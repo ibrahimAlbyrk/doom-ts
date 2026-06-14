@@ -3,7 +3,9 @@
 // assertion (non-zero exit); `tsc` typechecks it. Proves the acceptance cases:
 // wake-on-LOS, wake-on-sound, chase closes distance, melee hits a player-faction
 // target, a ranged monster spawns a projectile (and a hitscan monster deals
-// damage), pain interrupts an action, the death→dead transition, and infighting.
+// damage), pain interrupts an action, the death→dead transition, that death is
+// PERMANENT (a corpse never wakes/re-targets/flips to a live state under sight,
+// continued fire, pain, or infighting), and infighting.
 import type { MapData, Monster, MonsterType } from '../core';
 import { CELL_SIZE, EventBus, Rng, type GameEventMap } from '../core';
 import { World, createMonster } from '../entities';
@@ -172,7 +174,97 @@ function testDeathTransition(): void {
   ok(m.state === 'dead', 'death animation settles into an inert corpse (dead)');
 }
 
-// ── 9. infighting target switch ────────────────────────────────────────────────
+// States a corpse must NEVER re-enter. The renderer reads `m.state` to pick the
+// sprite (idle/chase ⇒ a standing/walking frame), so "stays in a dead state" IS
+// the sim-side guarantee behind "never stands back up".
+const LIVE_STATES = ['idle', 'chase', 'melee', 'missile', 'pain'];
+function isLiveState(s: string): boolean {
+  return LIVE_STATES.includes(s);
+}
+
+// ── 10. death is permanent: a corpse never re-enters a live state ───────────────
+// Regression for "killed monsters sometimes get back up". Kills a monster, then
+// runs the sim for a long time with the player point-blank, in the corpse's front
+// cone, with clear LOS — the exact setup that wakes a LIVE monster — and proves the
+// body never wakes, re-targets, or flips to a standing/active state.
+function testDeathIsPermanent(): void {
+  console.log('death is permanent');
+  const { world, combat, rng } = setup();
+  const ai = createMonsterAI(world, rng, combat); // wire the infighting bus too
+
+  const m = chasing(spawnMon(world, 'zombieman', 300, 200, FACING_PLAYER), world.player.id);
+  applyDamage(world, m, 25, world.player.id, 'player', rng, combat); // 20hp → −5: lethal, not gib
+  ok(m.state === 'death', 'lethal hit set state to death');
+  for (let i = 0; i < DEATH_SETTLE_TICS + 1; i++) updateMonsters(world, rng, combat, 1);
+  ok(m.state === 'dead', 'death animation settled into an inert corpse');
+
+  // Player point-blank, directly in front of the corpse (it faces −x), clear LOS.
+  world.player.x = m.x - 40;
+  world.player.y = m.y;
+  let everLive = false;
+  let everWoke = false;
+  for (let i = 0; i < 600; i++) {
+    updateMonsters(world, rng, combat, 1);
+    if (isLiveState(m.state)) everLive = true;
+    if (m.target !== null) everWoke = true;
+  }
+  ok(!everLive, 'corpse never re-enters a live state across 600 ticks with the player in sight');
+  ok(!everWoke, 'corpse never re-acquires a target (never wakes) despite LOS + front cone');
+  ok(m.state === 'dead', `corpse held the dead state (now ${m.state})`);
+  ok(m.health <= 0, `corpse health stayed non-positive (${m.health})`);
+
+  // Direct sight query on the corpse must also refuse — no sight response when dead.
+  ok(!lookForTarget(world, m), 'lookForTarget refuses a dead monster even in front cone + LOS');
+  ok(m.target === null, 'lookForTarget left the corpse without a target');
+
+  ai.dispose();
+}
+
+// ── 11. a corpse ignores further damage, pain, and infighting ──────────────────
+// Pours continuous fire from BOTH the player and a cross-species monster (the
+// infighting trigger) onto a gibbed body across and well past the settle window.
+// Proves no pain flinch, no re-target, no resurrection — gib stays gibbed.
+function testCorpseIgnoresDamageAndInfighting(): void {
+  console.log('corpse ignores further damage / pain / infighting');
+  const { world, combat, rng } = setup();
+  const ai = createMonsterAI(world, rng, combat);
+
+  let painAfterDeath = 0;
+  let deathEvents = 0;
+  combat.on('entity:death', () => deathEvents++);
+
+  // lostSoul has painChance 256 (always flinches while alive): the worst pain case.
+  const m = chasing(spawnMon(world, 'lostSoul', 400, 200, FACING_PLAYER), world.player.id);
+  applyDamage(world, m, 9999, world.player.id, 'player', rng, combat); // massive overkill ⇒ gib
+  ok(m.state === 'gib', 'massive overkill set state to gib');
+  ok(deathEvents === 1, 'death fired exactly once');
+
+  // Only count pain that arrives AFTER the body is already dead.
+  combat.on('entity:pain', (e) => {
+    if (e.id === m.id && !isLiveState(m.state)) painAfterDeath++;
+  });
+
+  const attacker = spawnMon(world, 'imp', 420, 200, 0); // cross-species: would normally infight
+  let everLive = false;
+  let everWoke = false;
+  for (let i = 0; i < 200; i++) {
+    applyDamage(world, m, 50, world.player.id, 'player', rng, combat);
+    applyDamage(world, m, 50, attacker.id, 'monster', rng, combat); // infighting source
+    updateMonsters(world, rng, combat, 1);
+    if (isLiveState(m.state)) everLive = true;
+    if (m.target !== null) everWoke = true;
+  }
+  ok(!everLive, 'gibbed body never flips back to a live state under continuous fire');
+  ok(!everWoke, 'gibbed body never re-targets despite cross-species (infighting) hits');
+  ok(painAfterDeath === 0, 'no pain flinch is ever rolled on the corpse');
+  ok(deathEvents === 1, 'death never fires a second time (no re-kill/re-spawn loop)');
+  ok(m.health <= 0, `corpse health stayed non-positive (${m.health})`);
+  ok(m.state === 'dead', `gib settled to an inert corpse and held it (now ${m.state})`);
+
+  ai.dispose();
+}
+
+// ── 12. infighting target switch ───────────────────────────────────────────────
 function testInfighting(): void {
   console.log('infighting');
   const { world, combat, rng } = setup();
@@ -202,6 +294,8 @@ function main(): void {
   testHitscanDamagesPlayer();
   testPainInterrupts();
   testDeathTransition();
+  testDeathIsPermanent();
+  testCorpseIgnoresDamageAndInfighting();
   testInfighting();
   console.log(`\nAll ${passed} AI assertions passed.`);
 }
