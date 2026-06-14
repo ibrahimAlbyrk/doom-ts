@@ -25,7 +25,7 @@ import {
   FIRE_EXTRALIGHT,
   fireFrame,
   weaponBob,
-  bobMagnitude,
+  bobAmount,
 } from './view-model';
 
 type ReadyState = 'raising' | 'ready' | 'lowering';
@@ -200,7 +200,9 @@ export class WeaponSystem {
     const def = WEAPONS[p.currentWeapon];
     const firing = this.fireAnimTics > 0;
     const flashing = this.flashTics > 0 && def.flashSprite !== '';
-    const bob = weaponBob(p.bob, bobMagnitude(p.velX, p.velY));
+    // DOOM A_WeaponReady: gun rides the player's bob amplitude on the shared walk phase
+    // (p.bob, advanced from the level clock by the session). 0 amplitude at rest → no bob.
+    const bob = weaponBob(p.bob, bobAmount(p.velX, p.velY));
     return {
       sprite: def.viewSprite,
       frame: firing ? fireFrame(def.fireTics, this.fireAnimTics) : 'A',

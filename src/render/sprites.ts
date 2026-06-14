@@ -1,7 +1,7 @@
 // Sprite + weapon view-model passes — engine.md §4, §10. Billboards: world→camera
 // transform, far-to-near sort, per-column z-buffer clip, alpha-test transparency, and
 // the screen-space weapon overlay drawn last on top of everything.
-import { CELL_SIZE, VIEW_HEIGHT } from '../core';
+import { CELL_SIZE } from '../core';
 import type { SpriteInstance, SpriteFrame, ILevelRuntime } from '../core';
 import type { Frame } from './frame';
 import { lightLevel, shade } from './lighting';
@@ -29,7 +29,7 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
   });
 
   const invDet = 1 / (cam.planeX * cam.dirY - cam.dirX * cam.planeY);
-  const eyeAboveFloor = VIEW_HEIGHT / CELL_SIZE;
+  const eyeAboveFloor = f.eyeAboveFloor; // bobbed eye height → sprites bob with the floor
   const half = H / 2;
 
   for (let s = 0; s < n; s++) {
@@ -86,9 +86,12 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
   }
 }
 
-/** Screen top-left for a bottom-center-anchored view-model frame, plus the bob offset. */
-function weaponAnchor(W: number, H: number, fw: number, fh: number, bobX: number, bobY: number) {
-  return { ox: (((W - fw) / 2 + bobX) | 0), oy: ((H - fh + bobY) | 0) };
+/**
+ * Screen top-left for a bottom-center-anchored view-model frame, plus the bob offset.
+ * `anchorBottom` is the play-view bottom (above the status bar), not the screen height.
+ */
+function weaponAnchor(W: number, anchorBottom: number, fw: number, fh: number, bobX: number, bobY: number) {
+  return { ox: (((W - fw) / 2 + bobX) | 0), oy: ((anchorBottom - fh + bobY) | 0) };
 }
 
 /** Alpha-test blit of a view-model frame at (ox,oy), shaded by `fLight`. */
@@ -127,6 +130,7 @@ export function drawWeapon(
   back: Uint32Array,
   W: number,
   H: number,
+  anchorBottom: number,
   frame: SpriteFrame,
   brightness: Float64Array,
   levels: number,
@@ -135,7 +139,7 @@ export function drawWeapon(
   bobX: number,
   bobY: number,
 ): void {
-  const { ox, oy } = weaponAnchor(W, H, frame.texture.width, frame.texture.height, bobX, bobY);
+  const { ox, oy } = weaponAnchor(W, anchorBottom, frame.texture.width, frame.texture.height, bobX, bobY);
   const fLight = brightness[lightLevel(0, sectorLight, extralight, levels)]!;
   blitViewFrame(back, W, H, frame, ox, oy, fLight);
 }
@@ -150,12 +154,13 @@ export function drawViewFlash(
   back: Uint32Array,
   W: number,
   H: number,
+  anchorBottom: number,
   weapon: SpriteFrame,
   flash: SpriteFrame,
   bobX: number,
   bobY: number,
 ): void {
-  const base = weaponAnchor(W, H, weapon.texture.width, weapon.texture.height, bobX, bobY);
+  const base = weaponAnchor(W, anchorBottom, weapon.texture.width, weapon.texture.height, bobX, bobY);
   const ox = base.ox + ((weapon.originX - flash.originX) | 0);
   const oy = base.oy + ((weapon.originY - flash.originY) | 0);
   blitViewFrame(back, W, H, flash, ox, oy, 1); // full-bright: muzzle flash ignores sector light

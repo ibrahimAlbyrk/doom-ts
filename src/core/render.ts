@@ -94,6 +94,19 @@ export interface RenderScene {
    * Optional/additive: omit for no tint.
    */
   tint?: ScreenTint;
+  /**
+   * Bobbed eye height above the player's floor tier in MAP UNITS (DOOM P_CalcHeight:
+   * VIEW_HEIGHT ± walk-bob). Drives the floor/ceiling/wall/sprite vertical projection so
+   * the whole view bobs while walking. Optional/additive: renderer defaults to VIEW_HEIGHT.
+   */
+  viewZ?: number;
+  /**
+   * Height in pixels (internal resolution) of the 3D play view — the screen minus the
+   * opaque status-bar strip. The weapon view-model anchors to the BOTTOM of this region
+   * (just above the bar), not the screen bottom. Optional/additive: defaults to the full
+   * internal height.
+   */
+  playViewHeight?: number;
 }
 
 export interface Renderer {

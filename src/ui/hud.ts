@@ -114,6 +114,15 @@ export class HudController {
     this.subscribe(events);
   }
 
+  /**
+   * Status-bar height in viewport pixels at the given viewport width — the bottom strip
+   * the bar occupies. The game subtracts this from the internal height to get the play
+   * view region the 3D world + weapon render into (DOOM bar = 32 of 200 ≈ 16%).
+   */
+  barHeightPx(viewportWidth: number): number {
+    return Math.round(BAR_H * (viewportWidth / BAR_W));
+  }
+
   /** Show a HUD message (pickup/key line). Auto-clears after a few seconds. */
   setMessage(text: string): void {
     this.message = text;
@@ -167,7 +176,7 @@ export class HudController {
     }
 
     this.renderBar(world.player);
-    const barH = Math.round(BAR_H * scale);
+    const barH = this.barHeightPx(vp.width);
     ctx.drawImage(this.bar, 0, vp.height - barH, vp.width, barH);
 
     renderer.blitHudLayer(layer);

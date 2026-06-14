@@ -29,7 +29,7 @@ import {
 import { loadLevel, mapDataFor, nextLevelId, thingSpawnsAtSkill, EPISODE1 } from '../levels';
 import { createPlayer, enemyDefForThingId } from '../entities';
 import { CombatBus, updateProjectiles } from '../combat';
-import { WeaponSystem } from '../weapons';
+import { WeaponSystem, bobPhase } from '../weapons';
 import { createMonsterAI, type MonsterAI } from '../ai';
 import { updateItems } from '../items';
 import { GameSoundEvents, type AudioManager } from '../audio';
@@ -266,6 +266,9 @@ export class GameSession {
     this.hud.update(FIXED_STEP);
     this.levelTimeTics += T;
     this.animTic += T;
+    // Advance the shared walk-bob phase off the level clock (DOOM leveltime). The eye
+    // bob (scene.viewZ) and weapon bob both read p.bob, so they ride the same wave.
+    p.bob = bobPhase(this.levelTimeTics);
     this.damageFlash = Math.max(0, this.damageFlash - 0.025 * T);
     this.bonusFlash = Math.max(0, this.bonusFlash - 0.02 * T);
 
@@ -332,7 +335,17 @@ export class GameSession {
     if (!level || !weapons) return;
     const { world, renderer, assets, config } = this.ctx;
     this.audio.setListener(world.player.x, world.player.y, world.player.angle);
-    const scene = buildRenderScene(world, level, assets, weapons.getView(), this.animTic, config.fovRatio);
+    // The status bar owns the bottom strip; the 3D view + weapon render above it.
+    const playViewHeight = config.internalHeight - this.hud.barHeightPx(config.internalWidth);
+    const scene = buildRenderScene(
+      world,
+      level,
+      assets,
+      weapons.getView(),
+      this.animTic,
+      config.fovRatio,
+      playViewHeight,
+    );
     scene.tint = this.computeTint();
     renderer.render(scene, alpha);
     // Automap overlay sits over the world but under the HUD bar (classic DOOM look).

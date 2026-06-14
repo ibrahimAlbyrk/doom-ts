@@ -110,7 +110,9 @@ export class Canvas2DRenderer implements Renderer {
     const pcy = Math.floor(cam.posY);
     const pf = level.floorHeightAt(pcx, pcy) / CELL_SIZE;
     const pc = level.ceilHeightAt(pcx, pcy) / CELL_SIZE;
-    const eyeAboveFloor = VIEW_HEIGHT / CELL_SIZE;
+    // Bobbed eye height (engine.md §7, DOOM P_CalcHeight): scene.viewZ carries the
+    // walk-bobbed eye-above-floor; absent it, fall back to the static VIEW_HEIGHT.
+    const eyeAboveFloor = (scene.viewZ ?? VIEW_HEIGHT) / CELL_SIZE;
     const eyeZ = pf + eyeAboveFloor;
     const posZFloor = eyeAboveFloor * H;
     const ceilAboveEye = Math.max(pc - eyeZ, 0.001);
@@ -131,6 +133,7 @@ export class Canvas2DRenderer implements Renderer {
       levels: config.colormapLevels,
       extralight: scene.extralight,
       eyeZ,
+      eyeAboveFloor,
       posZFloor,
       posZCeil,
       skyTex,
@@ -143,10 +146,14 @@ export class Canvas2DRenderer implements Renderer {
     castWalls(frame);
     drawSprites(frame, scene.sprites, this.spriteOrder);
     if (scene.viewWeapon) {
+      // Anchor the gun to the bottom of the play view (just above the opaque status bar),
+      // not the screen bottom, so it stays fully visible (engine.md §10 / DOOM view window).
+      const anchorBottom = scene.playViewHeight ?? H;
       drawWeapon(
         back,
         W,
         H,
+        anchorBottom,
         scene.viewWeapon,
         this.brightness,
         config.colormapLevels,
@@ -156,7 +163,7 @@ export class Canvas2DRenderer implements Renderer {
         scene.bobY,
       );
       if (scene.viewFlash) {
-        drawViewFlash(back, W, H, scene.viewWeapon, scene.viewFlash, scene.bobX, scene.bobY);
+        drawViewFlash(back, W, H, anchorBottom, scene.viewWeapon, scene.viewFlash, scene.bobX, scene.bobY);
       }
     }
 

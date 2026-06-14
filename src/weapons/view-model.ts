@@ -1,6 +1,7 @@
 // First-person view-model state (engine.md §10). The weapon system produces a
 // WeaponView each frame; the game state resolves the sprite ids through the asset
 // store and copies bobX/bobY/extralight onto the frozen RenderScene fields.
+import { TAU } from '../core';
 
 /** Screen-space weapon view-model for one frame (sprite ids, not resolved frames). */
 export interface WeaponView {
@@ -26,11 +27,13 @@ export const LOWER_TICS = 16;
 /** Screen travel between the ready (top) and stowed (bottom) view-model positions. */
 export const LOWER_TRAVEL = 96;
 
-// Walk-bob amplitude (px). DOOM bobs the gun on the player's momentum phase.
-export const WALK_BOB_X = 8;
-export const WALK_BOB_Y = 6;
-/** Speed (mu/tic) at which the bob reaches full amplitude; it scales to 0 at rest. */
-export const BOB_SPEED_REF = 16;
+// Walk-bob, 1:1 with DOOM (P_CalcHeight + A_WeaponReady). The bob amplitude is the
+// player's momentum-derived `player->bob`, capped at MAXBOB; the phase is the level tic
+// clock so the eye bob and weapon bob ride the SAME wave. Both settle to 0 at rest.
+/** DOOM MAXBOB: bob amplitude caps at 16 mu (the eye/weapon never swing past this). */
+export const MAXBOB = 16;
+/** DOOM view-bob period: the eye completes one full sine cycle every 20 tics. */
+export const BOB_PERIOD_TICS = 20;
 
 // Muzzle flash duration + the brightness bump it adds (engine.md §5 extralight).
 export const FLASH_TICS = 5;
@@ -46,15 +49,25 @@ export function fireFrame(fireTics: number, fireAnimTics: number): string {
   return FIRE_FRAMES[Math.max(0, idx)]!;
 }
 
-/** Bob amplitude scale [0,1] from the player's speed — 0 at rest, full when running. */
-export function bobMagnitude(velX: number, velY: number): number {
-  return Math.min(1, Math.hypot(velX, velY) / BOB_SPEED_REF);
+/** DOOM `player->bob`: momentum bob amplitude (mu) = (momx²+momy²)/4, capped at MAXBOB. */
+export function bobAmount(velX: number, velY: number): number {
+  return Math.min(MAXBOB, (velX * velX + velY * velY) / 4);
 }
 
-/** Map the bob phase + magnitude to a screen offset. y uses |sin| so the gun dips, never rises. */
-export function weaponBob(phase: number, magnitude: number): { x: number; y: number } {
+/** Walk-bob phase (radians) from the level tic clock — one full cycle per BOB_PERIOD_TICS. */
+export function bobPhase(timeTics: number): number {
+  return (TAU / BOB_PERIOD_TICS) * timeTics;
+}
+
+/** DOOM A_WeaponReady weapon bob: x = amount·cos(phase), y = amount·|sin(phase)| (px; y down). */
+export function weaponBob(phase: number, amount: number): { x: number; y: number } {
   return {
-    x: Math.cos(phase) * WALK_BOB_X * magnitude,
-    y: Math.abs(Math.sin(phase)) * WALK_BOB_Y * magnitude,
+    x: Math.cos(phase) * amount,
+    y: Math.abs(Math.sin(phase)) * amount,
   };
+}
+
+/** DOOM P_CalcHeight eye bob: viewz offset (mu, +up) = (amount/2)·sin(phase), same phase as the gun. */
+export function viewBob(phase: number, amount: number): number {
+  return (amount / 2) * Math.sin(phase);
 }

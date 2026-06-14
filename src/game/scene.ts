@@ -1,7 +1,7 @@
 // Per-frame RenderScene assembly: turns the live entity world into the cell-space
 // camera + billboard list the frozen renderer consumes (engine.md §4/§9). The
 // renderer ignores alpha/bob, so this stays a straight snapshot of world state.
-import { CELL_SIZE } from '../core';
+import { CELL_SIZE, VIEW_HEIGHT } from '../core';
 import type {
   RenderScene,
   SpriteInstance,
@@ -12,7 +12,7 @@ import type {
   Monster,
 } from '../core';
 import { ENEMIES, ITEMS_BY_ID } from '../data';
-import type { WeaponView } from '../weapons';
+import { bobAmount, viewBob, type WeaponView } from '../weapons';
 
 const DEG45 = Math.PI / 4;
 const WALK_FRAMES = ['A', 'B', 'C', 'D'] as const;
@@ -76,10 +76,14 @@ export function buildRenderScene(
   view: WeaponView,
   animTic: number,
   fovRatio: number,
+  playViewHeight?: number,
 ): RenderScene {
   const p = world.player;
   const dirX = Math.cos(p.angle);
   const dirY = Math.sin(p.angle);
+  // DOOM P_CalcHeight eye bob: viewz = floorz + VIEW_HEIGHT + bob, on the same phase
+  // (p.bob) as the weapon bob so the view and gun ride one wave; settles at rest.
+  const viewZ = VIEW_HEIGHT + viewBob(p.bob, bobAmount(p.velX, p.velY));
 
   const sprites: SpriteInstance[] = [];
 
@@ -137,5 +141,7 @@ export function buildRenderScene(
     extralight: view.extralight,
     bobX: view.bobX,
     bobY: view.bobY,
+    viewZ,
+    playViewHeight,
   };
 }
