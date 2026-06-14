@@ -20,6 +20,8 @@ npm-debug.log*
 /public/assets/fonts/
 /public/assets/audio/
 /public/assets/maps/
+/public/assets/palette.json
+/public/assets/THIRD-PARTY/
 /public/manifest.json
 
 # Source WADs (never commit copyrighted-or-large binaries here)

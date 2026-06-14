@@ -1,6 +1,12 @@
 // Decoded-asset registry — implements the IAssetStore contract from src/core.
-// STUB: holds decoded textures/sprites/maps + the palette; lookups are wired but
-// empty until the asset-loader (and the WAD extractor) populate them.
+// The AssetLoader populates it from the manifest at boot. getTexture(id) is the
+// single image accessor exposed by IAssetStore, so EVERY decoded image is keyed
+// here under a string id:
+//   • wall textures / flats / UI graphics → their manifest key (e.g. "STARTAN3",
+//     "FLOOR4_8", "STBAR", "STTNUM0").
+//   • font glyphs → `${fontKey}#${asciiCode}` (e.g. "hud#65" for 'A').
+// Sprites use getSprite(prefix, frame, rotation), keyed `${prefix}${frame}${rotation}`
+// (e.g. "TROOA1").
 import type { IAssetStore, Texture, SpriteFrame, MapData } from '../core';
 import type { AssetManifest } from './manifest';
 
@@ -34,5 +40,23 @@ export class AssetStore implements IAssetStore {
 
   has(id: string): boolean {
     return this.textures.has(id) || this.sprites.has(id) || this.maps.has(id);
+  }
+
+  // ── Registration (used by AssetLoader) ────────────────────────────────────
+  setManifest(manifest: AssetManifest): void {
+    this.manifest = manifest;
+  }
+
+  addTexture(id: string, texture: Texture): void {
+    this.textures.set(id, texture);
+  }
+
+  /** Register a sprite frame under its store key (prefix + frame + rotation). */
+  addSprite(key: string, frame: SpriteFrame): void {
+    this.sprites.set(key, frame);
+  }
+
+  addMap(id: string, map: MapData): void {
+    this.maps.set(id, map);
   }
 }
