@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- THROWAWAY DEV-HARNESS for the DEATHMATCH scoreboard + results UI. Dev-only; not a
+     build entry. Open at: http://localhost:5173/src/ui/dev-scoreboard.html (vite dev) -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Scoreboard Dev Harness</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      #screen {
+        display: block; width: 100vw; height: 100vh;
+        image-rendering: pixelated; object-fit: contain; background: #000;
+      }
+      #help {
+        position: fixed; top: 6px; left: 6px; color: #9f9; font: 11px monospace;
+        text-shadow: 0 0 2px #000; pointer-events: none; white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="screen" width="480" height="270"></canvas>
+    <div id="help">1 Scoreboard (in-match overlay + kill-feed) · 2 Results (post-match)
+Results: A/D or W/S move · E select REMATCH/LEAVE · (choice stored on #help data-action)</div>
+    <script type="module" src="./dev-scoreboard.ts"></script>
+  </body>
+</html>

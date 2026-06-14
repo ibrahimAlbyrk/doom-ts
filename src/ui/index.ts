@@ -7,6 +7,8 @@
 //   drawGameOver  — death screen
 //   drawCredits   — required Freedoom BSD About/Credits screen
 //   drawAutomap   — DOOM-style top-down vector automap overlay
+//   drawScoreboard— DEATHMATCH Tab-to-show frag table overlay (+ kill-feed helper)
+//   Results       — post-match winner banner + final frag table + REMATCH/LEAVE
 export * from './gfx';
 export * from './automap';
 export * from './hud';
@@ -15,3 +17,5 @@ export * from './menus';
 export * from './intermission';
 export * from './gameover';
 export * from './credits';
+export * from './scoreboard';
+export * from './results';
