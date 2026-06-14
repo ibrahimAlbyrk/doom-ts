@@ -1,18 +1,53 @@
-// LevelRuntime — implements the ILevelRuntime contract (src/core). Holds the loaded
-// MapData plus dynamic state (door open amounts). Grid accessors are wired (cheap
-// reads); door animation is driven by src/world/doors. (x,y) are cell coordinates.
-import type { ILevelRuntime, MapData } from '../core';
+// LevelRuntime — implements the ILevelRuntime contract (src/core) and owns the
+// loaded level's MUTABLE state: per-door open amounts + phase, per-lift floor
+// tier + phase, and once-trigger bookkeeping. Grid accessors are cheap reads;
+// the door/lift state machines that mutate this state live in src/world/doors.
+// (x,y) are cell coordinates throughout.
+import type { ILevelRuntime, MapData, DoorSpec, LiftSpec, ExitKind } from '../core';
+
+export type DoorPhase = 'closed' | 'opening' | 'open' | 'closing';
+
+export interface DoorRuntime {
+  spec: DoorSpec;
+  phase: DoorPhase;
+  open: number; // 0 = closed .. 1 = fully open
+  waitTimer: number; // tics left in the open phase before auto-close
+}
+
+export type LiftPhase = 'top' | 'lowering' | 'bottom' | 'raising';
+
+export interface LiftRuntime {
+  spec: LiftSpec;
+  cells: number[]; // cell indices this lift spans
+  phase: LiftPhase;
+  height: number; // current floor tier (map units)
+  waitTimer: number; // tics left at the bottom before raising
+}
 
 export class LevelRuntime implements ILevelRuntime {
   readonly data: MapData;
-  private readonly doorCells: Set<number>;
-  private readonly doorOpen: Map<number, number>; // cell index → 0 (closed) .. 1 (open)
+  readonly doors: DoorRuntime[];
+  readonly lifts: LiftRuntime[];
+  /** Set by a walkover exit trigger; the game reads + clears it. */
+  pendingExit: ExitKind | null = null;
+
+  private readonly doorByCell = new Map<number, DoorRuntime>();
+  private readonly liftByCell = new Map<number, LiftRuntime>();
+  private readonly fired = new Set<string>(); // once-triggers already consumed
 
   constructor(data: MapData) {
     this.data = data;
-    this.doorCells = new Set(data.doors.map((d) => this.idx(d.x, d.y)));
-    this.doorOpen = new Map();
-    for (const cell of this.doorCells) this.doorOpen.set(cell, 0);
+    this.doors = data.doors.map((spec) => ({ spec, phase: 'closed' as DoorPhase, open: 0, waitTimer: 0 }));
+    for (const d of this.doors) this.doorByCell.set(this.idx(d.spec.x, d.spec.y), d);
+
+    this.lifts = data.lifts.map((spec) => ({
+      spec,
+      cells: spec.cells.map((c) => this.idx(c.x, c.y)),
+      phase: 'top' as LiftPhase,
+      height: spec.highHeight,
+      waitTimer: 0,
+    }));
+    for (const l of this.lifts) for (const cell of l.cells) this.liftByCell.set(cell, l);
   }
 
   private idx(cx: number, cy: number): number {
@@ -25,10 +60,9 @@ export class LevelRuntime implements ILevelRuntime {
 
   isSolid(cx: number, cy: number): boolean {
     if (!this.inBounds(cx, cy)) return true;
-    const wall = this.data.walls[this.idx(cx, cy)] ?? 0;
-    if (wall === 0) return false;
-    if (this.doorCells.has(this.idx(cx, cy))) return this.doorOpenAt(cx, cy) < 1;
-    return true;
+    const door = this.doorByCell.get(this.idx(cx, cy));
+    if (door) return door.open < 1; // door cell blocks until fully open
+    return (this.data.walls[this.idx(cx, cy)] ?? 0) !== 0;
   }
 
   wallTextureAt(cx: number, cy: number): string | null {
@@ -49,7 +83,10 @@ export class LevelRuntime implements ILevelRuntime {
   }
 
   floorHeightAt(cx: number, cy: number): number {
-    return this.inBounds(cx, cy) ? (this.data.floorHeights[this.idx(cx, cy)] ?? 0) : 0;
+    if (!this.inBounds(cx, cy)) return 0;
+    const lift = this.liftByCell.get(this.idx(cx, cy));
+    if (lift) return lift.height; // animated tier overrides the static layer
+    return this.data.floorHeights[this.idx(cx, cy)] ?? 0;
   }
 
   ceilHeightAt(cx: number, cy: number): number {
@@ -61,15 +98,27 @@ export class LevelRuntime implements ILevelRuntime {
   }
 
   doorOpenAt(cx: number, cy: number): number {
-    return this.doorOpen.get(this.idx(cx, cy)) ?? 1;
-  }
-
-  /** Set a door's open amount (called by the door animation system). */
-  setDoorOpen(cx: number, cy: number, amount: number): void {
-    if (this.doorCells.has(this.idx(cx, cy))) this.doorOpen.set(this.idx(cx, cy), amount);
+    const door = this.doorByCell.get(this.idx(cx, cy));
+    return door ? door.open : 1; // non-door cells read as fully open
   }
 
   isDoor(cx: number, cy: number): boolean {
-    return this.doorCells.has(this.idx(cx, cy));
+    return this.doorByCell.has(this.idx(cx, cy));
+  }
+
+  doorAt(cx: number, cy: number): DoorRuntime | undefined {
+    return this.doorByCell.get(this.idx(cx, cy));
+  }
+
+  liftAt(cx: number, cy: number): LiftRuntime | undefined {
+    return this.liftByCell.get(this.idx(cx, cy));
+  }
+
+  hasFired(kind: string, i: number): boolean {
+    return this.fired.has(`${kind}:${i}`);
+  }
+
+  markFired(kind: string, i: number): void {
+    this.fired.add(`${kind}:${i}`);
   }
 }
