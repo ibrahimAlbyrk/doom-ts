@@ -100,13 +100,16 @@ export function buildRenderScene(
   animTic: number,
   fovRatio: number,
   playViewHeight?: number,
+  viewFloorOffset = 0,
 ): RenderScene {
   const p = world.player;
   const dirX = Math.cos(p.angle);
   const dirY = Math.sin(p.angle);
   // DOOM P_CalcHeight eye bob: viewz = floorz + VIEW_HEIGHT + bob, on the same phase
   // (p.bob) as the weapon bob so the view and gun ride one wave; settles at rest.
-  const viewZ = VIEW_HEIGHT + viewBob(p.bob, bobAmount(p.velX, p.velY));
+  // viewFloorOffset (smoothViewFloorZ − actual floor tier) eases tier changes so the
+  // renderer's eyeZ glides instead of snapping; the bob rides on top of that base.
+  const viewZ = VIEW_HEIGHT + viewBob(p.bob, bobAmount(p.velX, p.velY)) + viewFloorOffset;
 
   const sprites: SpriteInstance[] = [];
 

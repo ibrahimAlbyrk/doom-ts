@@ -48,6 +48,14 @@ const USE_REACHES = [28, 52, 76] as const;
 const SFX_SWITCH = 'DSSWTCHN';
 const SFX_LIFT_START = 'DSPSTART';
 
+// View-floor smoothing (DOOM P_CalcHeight feel): the rendered eye eases toward the
+// player's standing floor tier instead of snapping when stepping up/down a tier or
+// riding a lift. Each doom-tic closes this fraction of the remaining gap, with a
+// minimum step so the proportional tail lands quickly (a tier change settles in a
+// fraction of a second rather than floating slowly).
+const VIEW_FLOOR_LERP = 0.3;
+const VIEW_FLOOR_MIN_STEP = 2; // mu per doom-tic
+
 export interface TicCommand {
   forward: number; // -1..1 (forward +)
   strafe: number; // -1..1 (right +)
@@ -84,6 +92,8 @@ export class GameSession {
   private damageFlash = 0;
   private bonusFlash = 0;
   private animTic = 0;
+  /** Smoothed view-floor height (mu) the eye rides; eases toward the standing tier. */
+  private smoothViewFloorZ = 0;
   private levelTimeTics = 0;
   private kills = 0;
   private items = 0;
@@ -164,6 +174,9 @@ export class GameSession {
     this.secrets = 0;
     this.levelTimeTics = 0;
     this.animTic = 0;
+    // Seed the smoothed view-floor to the spawn tier so the first frame doesn't ease.
+    const sp = this.ctx.world.player;
+    this.smoothViewFloorZ = this.level.floorHeightAt(cellOf(sp.x), cellOf(sp.y));
     this.damageFlash = 0;
     this.bonusFlash = 0;
     this.hud.setMessage(data.name);
@@ -264,6 +277,10 @@ export class GameSession {
     updateDoors(level, FIXED_STEP, (cx, cy) => cellOf(p.x) === cx && cellOf(p.y) === cy, events);
     checkWalkoverTriggers(level, p, events);
 
+    // 7.5) ease the rendered view-floor toward the player's standing tier (after lift
+    // motion above) so step-ups/downs and lift rides glide instead of snapping.
+    this.advanceViewFloor(level.floorHeightAt(cellOf(p.x), cellOf(p.y)), T);
+
     // 8) item pickups.
     updateItems({ world, weapons, skill: this.ctx.skill, events }, T);
 
@@ -283,6 +300,20 @@ export class GameSession {
       return 'exit';
     }
     return 'continue';
+  }
+
+  /** Move the smoothed view-floor toward `targetZ` by a clamped step (DOOM-like ease):
+   *  proportional to the remaining gap, but never below a minimum so the tail lands
+   *  quickly, and never past the target. `tics` scales the step to the sim cadence. */
+  private advanceViewFloor(targetZ: number, tics: number): void {
+    const dz = targetZ - this.smoothViewFloorZ;
+    const adz = Math.abs(dz);
+    if (adz < 0.01) {
+      this.smoothViewFloorZ = targetZ;
+      return;
+    }
+    const step = Math.min(adz, Math.max(VIEW_FLOOR_MIN_STEP, adz * VIEW_FLOOR_LERP) * tics);
+    this.smoothViewFloorZ += Math.sign(dz) * step;
   }
 
   /** Use-press: open a door or trip a switch-triggered exit/lift just ahead. */
@@ -341,6 +372,10 @@ export class GameSession {
     this.audio.setListener(world.player.x, world.player.y, world.player.angle);
     // The status bar owns the bottom strip; the 3D view + weapon render above it.
     const playViewHeight = config.internalHeight - this.hud.barHeightPx(config.internalWidth);
+    // Offset = smoothed view-floor − the actual tier the renderer reads under the
+    // player; folding it into viewZ makes the renderer's eyeZ glide across tiers.
+    const p = world.player;
+    const viewFloorOffset = this.smoothViewFloorZ - level.floorHeightAt(cellOf(p.x), cellOf(p.y));
     const scene = buildRenderScene(
       world,
       level,
@@ -349,6 +384,7 @@ export class GameSession {
       this.animTic,
       config.fovRatio,
       playViewHeight,
+      viewFloorOffset,
     );
     scene.tint = this.computeTint();
     renderer.render(scene, alpha);
