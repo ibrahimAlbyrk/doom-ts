@@ -9,9 +9,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "extract-assets": "node --experimental-strip-types tools/extract-wad/extract.ts"
+    "extract-assets": "tsx tools/extract-wad/extract.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.0"
   }
