@@ -13,6 +13,12 @@ REMOTE_DIR="${2:-/opt/doom}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Optional SSH key (DEPLOY_SSH_KEY=/path/to/key). Needed when the box uses key-only auth and the
+# key isn't your default identity — e.g. this server: DEPLOY_SSH_KEY=~/Downloads/zap-hosting.pri
+SSH_OPTS=()
+[ -n "${DEPLOY_SSH_KEY:-}" ] && SSH_OPTS=(-i "${DEPLOY_SSH_KEY}" -o IdentitiesOnly=yes)
+SSH_OPTS+=(-o StrictHostKeyChecking=accept-new)
+
 echo "==> Building client locally (dist/)"
 if [ ! -e public/assets/palette.json ]; then
   echo "ERROR: public/assets is empty. Run 'npm run extract-assets' first (see DEPLOY.md)." >&2
@@ -22,7 +28,7 @@ npm run build
 
 echo "==> Syncing repo to ${TARGET}:${REMOTE_DIR}"
 # Ship source + the freshly built dist/. Exclude local-only/heavy dirs; the box runs npm ci itself.
-rsync -avz --delete \
+rsync -avz --delete -e "ssh ${SSH_OPTS[*]}" \
   --exclude node_modules \
   --exclude .git \
   --exclude .eos \
@@ -30,6 +36,8 @@ rsync -avz --delete \
   ./ "${TARGET}:${REMOTE_DIR}/"
 
 echo "==> Installing deps + restarting service on the box"
-ssh "$TARGET" "cd '${REMOTE_DIR}' && npm ci && sudo systemctl restart doom && sleep 1 && systemctl --no-pager status doom | head -5"
+# npm ci (NOT --omit=dev): the server runs `npx tsx server/prod.ts`, and tsx is a devDependency.
+# sudo when present (non-root deploy user), else direct (deploying as root).
+ssh "${SSH_OPTS[@]}" "$TARGET" "cd '${REMOTE_DIR}' && npm ci && { sudo systemctl restart doom 2>/dev/null || systemctl restart doom; } && sleep 1 && systemctl --no-pager status doom | head -5"
 
-echo "==> Done. Tail logs with:  ssh ${TARGET} journalctl -u doom -f"
+echo "==> Done. Tail logs with:  ssh ${SSH_OPTS[*]} ${TARGET} journalctl -u doom -f"
