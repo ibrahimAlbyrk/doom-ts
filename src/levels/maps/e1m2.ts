@@ -1,7 +1,7 @@
 // E1M2 "Refinery" — nukage/tech (38×30, SKY1). The player drops from a north
 // control room into the REACTOR HALL and circles a solid COMPUTE core ringed by
-// nukage channels. A teleporter on the hall's SE corner jumps to an isolated island
-// holding the YELLOW key (a second pad returns you). The west PUMP WING opens off
+// nukage channels. A lit GATE teleporter pad in the hall's SE corner jumps to an
+// isolated island holding the YELLOW key (a matching pad returns you). The west PUMP WING opens off
 // the ring; behind its YELLOW-locked door waits the BLUE key. The BLUE-locked door
 // east opens the exit room (switch). Secret: a hidden lift in the pump wing rises to
 // a balcony with a soulsphere + berserk (the melee answer to the demon rush).
@@ -67,6 +67,11 @@ export const E1M2 = compile({
     { x0: 1, y0: 25, x1: 6, y1: 28, floor: 'FLOOR5_2', floorH: 64, ceil: 'FLAT1', ceilH: 96, light: 120 }, // secret balcony (+64)
     { x0: 31, y0: 23, x1: 36, y1: 28, floor: 'FLAT14', ceil: 'TLITE6_4', ceilH: 120, light: 200 }, // yellow island
     { x0: 30, y0: 8, x1: 36, y1: 14, floor: 'FLAT1_1', ceil: 'TLITE6_1', ceilH: 120, light: 172 }, // exit room
+    // Teleporter pads — GATE flat + bright light + a light fixture overhead so each
+    // reads as a deliberate "step here" pad, not a hidden trap. Applied last so they
+    // override the underlying hall/island flats.
+    { x0: 28, y0: 22, x1: 28, y1: 22, floor: 'GATE1', ceil: 'TLITE6_4', ceilH: 120, light: 250 }, // SE-corner pad → yellow island
+    { x0: 33, y0: 27, x1: 33, y1: 27, floor: 'GATE1', light: 250 }, // island return pad → SE hall
   ],
   doors: [
     { x: 18, y: 7, texture: 'BIGDOOR4' }, // control → reactor hall
@@ -79,8 +84,10 @@ export const E1M2 = compile({
     { cells: [{ x: 3, y: 24 }], low: 0, high: 64, trigger: { kind: 'walkover', x: 3, y: 23, once: false, cells: [{ x: 2, y: 23 }, { x: 3, y: 23 }, { x: 4, y: 23 }] } }, // secret balcony
   ],
   teleporters: [
-    { trigger: { kind: 'walkover', x: 26, y: 22, once: false }, destX: 33, destY: 25, destAngle: 180 }, // hall → yellow island
-    { trigger: { kind: 'walkover', x: 33, y: 27, once: false }, destX: 26, destY: 20, destAngle: 270 }, // island → hall (return)
+    // Pad is the lit GATE1 cell at (28,22); arrive on the island right beside the key, facing it.
+    { trigger: { kind: 'walkover', x: 28, y: 22, once: false }, destX: 33, destY: 25, destAngle: 0 }, // SE pad → yellow island
+    // Return pad drops you onto dry SE hall floor (not the nukage), facing into the hall.
+    { trigger: { kind: 'walkover', x: 33, y: 27, once: false }, destX: 27, destY: 23, destAngle: 270 }, // island → hall (return)
   ],
   exits: [{ kind: 'normal', trigger: { kind: 'switch', x: 36, y: 11 } }],
   secrets: cells(1, 25, 6, 28),
