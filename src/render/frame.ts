@@ -21,8 +21,6 @@ export interface Frame {
   // Height model (cell units). screenY(z) = H/2 + (eyeZ - z) * H / perpDist.
   eyeZ: number; // world height of the eye
   eyeAboveFloor: number; // eye height above the player's floor tier (bobbed) — sprite floor line
-  posZFloor: number; // H * (eye height above player floor) — floor row-distance scale
-  posZCeil: number; // H * (player ceiling above eye) — ceiling row-distance scale
 
   // Sky (engine.md §6.5).
   skyTex: Texture;
