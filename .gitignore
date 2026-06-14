@@ -26,3 +26,7 @@ npm-debug.log*
 
 # Source WADs (never commit copyrighted-or-large binaries here)
 *.wad
+
+# Deploy secrets/config (deploy/.env.example is the committed template)
+.env
+deploy/.env

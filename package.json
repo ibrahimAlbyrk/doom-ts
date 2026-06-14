@@ -13,6 +13,8 @@
     "sim:headless": "npx tsx server/headless-sim.ts",
     "server": "npx tsx server/index.ts",
     "server:dev": "npx tsx watch server/index.ts",
+    "build:all": "npm run build",
+    "start:prod": "npx tsx server/prod.ts",
     "test": "npx tsx src/world/world.test.ts && npx tsx src/combat/combat.test.ts && npx tsx src/ai/monster-ai.test.ts && npx tsx src/items/items.test.ts && npx tsx src/weapons/weapons.test.ts && npx tsx src/levels/levels.test.ts && npx tsx src/game/multiplayer.test.ts && npx tsx src/lobby/lobby-client.test.ts && npx tsx src/session/netcode.test.ts && npx tsx src/session/netcode-smooth.test.ts",
     "extract-assets": "tsx tools/extract-wad/extract.ts"
   },
@@ -22,7 +24,9 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@colyseus/ws-transport": "^0.16.5",
     "colyseus": "^0.16.5",
-    "colyseus.js": "^0.16.22"
+    "colyseus.js": "^0.16.22",
+    "express": "^5.2.1"
   }
 }

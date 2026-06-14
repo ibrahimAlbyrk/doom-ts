@@ -38,9 +38,17 @@ const MOUSE_RADIANS_PER_PX = 0.0022;
 const VIEW_FLOOR_LERP = 0.3;
 const VIEW_FLOOR_MIN_STEP = 2; // mu per doom-tic
 
-/** Default match-server endpoint (same host, Colyseus port). The lobby connects lazily
- *  on host/join, so offline single-player never touches the network. */
-const MP_SERVER_URL = `ws://${location.hostname || 'localhost'}:2567`;
+/** Match-server endpoint. Resolution order (the lobby connects lazily on host/join, so
+ *  offline single-player never touches the network):
+ *   1. VITE_MP_SERVER_URL — explicit build-time override (point a build at any deployed host),
+ *   2. production build — same origin as the page (single Node process / Caddy serve client + ws
+ *      together), so http→ws and https→wss with no port; no hardcoded host,
+ *   3. dev — the Vite dev server and the Colyseus server are separate, so target :2567. */
+const MP_SERVER_URL =
+  (import.meta.env.VITE_MP_SERVER_URL as string | undefined) ||
+  (import.meta.env.DEV
+    ? `ws://${location.hostname || 'localhost'}:2567`
+    : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
 /** Nametag tint per LOBBY_COLORS index (GREEN, INDIGO, BROWN, RED). */
 const NAMETAG_COLORS = ['#56c84c', '#6f78ff', '#b9803f', '#ff4d4d'] as const;
 /** Nominal PLAY sprite texel height — for placing a nametag just above the avatar's head. */
