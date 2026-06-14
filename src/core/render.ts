@@ -2,7 +2,7 @@
 // The raycaster (src/render) implements `Renderer`; the asset store produces
 // `Texture`/`SpriteFrame`; the game state builds a `RenderScene` each frame.
 // Render math/derivation: docs/research/engine.md.
-import type { ILevelRuntime } from './types';
+import type { ILevelRuntime, IAssetStore } from './types';
 
 /** Player camera in cell-space (engine.md §0). dir & plane stay perpendicular. */
 export interface Camera {
@@ -56,6 +56,9 @@ export interface RenderScene {
   viewWeapon: SpriteFrame | null;
   /** Whole-scene brightness bump after firing (engine.md §5 extralight). */
   extralight: number;
+  /** Weapon-bob screen offset for the view-model; consumers default to 0. */
+  bobX: number;
+  bobY: number;
 }
 
 export interface Renderer {
@@ -65,6 +68,12 @@ export interface Renderer {
   resize(config: RenderConfig): void;
   /** Build the shade colormaps from the asset palette (engine.md §5.1). */
   setPalette(palette: Uint32Array): void;
+  /** Bind the decoded-asset store so wall/flat/sky texture keys resolve to Textures. */
+  setAssets(store: IAssetStore): void;
+  /** Internal render resolution; UI draws its HUD layer at this size (HUD-blit hook). */
+  getViewport(): { width: number; height: number };
+  /** Composite a UI-owned layer (drawn at internal resolution) onto the display canvas. */
+  blitHudLayer(layer: CanvasImageSource): void;
   /** Draw one world frame; `alpha` is the fixed-step interpolation factor. */
   render(scene: RenderScene, alpha: number): void;
 }

@@ -36,8 +36,8 @@ export const FRICTION = 0.90625; // [DD §1] 0xE800/65536 per-tic momentum decay
 export const STOP_SPEED = 0.0625; // [DD §1] momentum below this snaps to 0 (mu/tic)
 export const MAX_MOVE = 30; // [DD §1] per-axis momentum clamp (mu/tic)
 export const PLAYER_MASS = 100; // [DD §1]
-export const PLAYER_THRUST_WALK = 0.078125; // [DD §1] forwardmove[0]=25 → cmd*2048 fixed
-export const PLAYER_THRUST_RUN = 0.15625; // [DD §1] forwardmove[1]=50
+export const PLAYER_THRUST_WALK = 0.78125; // [DD §1] forwardmove[0]=25 → cmd*2048 fixed
+export const PLAYER_THRUST_RUN = 1.5625; // [DD §1] forwardmove[1]=50
 
 // ── Turning (doom-design.md §1) ────────────────────────────────────────────
 export const TURN_WALK_DEG_PER_SEC = 123.3; // [DD §1] angleturn 640

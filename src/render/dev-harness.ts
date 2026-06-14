@@ -217,7 +217,7 @@ function main(): void {
     move(dt);
     const cam = cameraFromAngle(px, py, angle);
     renderer.render(
-      { camera: cam, level, sprites, viewWeapon: weapon, extralight: 0 },
+      { camera: cam, level, sprites, viewWeapon: weapon, extralight: 0, bobX: 0, bobY: 0 },
       0,
     );
     requestAnimationFrame(frame);
