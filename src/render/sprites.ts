@@ -1,26 +1,131 @@
-// Sprite + weapon view-model passes — engine.md §4, §10. STUB: billboard transform,
-// far-to-near sort, per-column z-buffer clip + transparency, weapon overlay.
-import type { Camera, RenderConfig, SpriteInstance, SpriteFrame } from '../core';
+// Sprite + weapon view-model passes — engine.md §4, §10. Billboards: world→camera
+// transform, far-to-near sort, per-column z-buffer clip, alpha-test transparency, and
+// the screen-space weapon overlay drawn last on top of everything.
+import { CELL_SIZE, VIEW_HEIGHT } from '../core';
+import type { SpriteInstance, SpriteFrame, ILevelRuntime } from '../core';
+import type { Frame } from './frame';
+import { lightLevel, shade } from './lighting';
 
-/** Draw all world sprites, z-tested against the wall zBuffer (engine.md §4). */
-export function drawSprites(
-  _back: Uint32Array,
-  _zBuffer: Float64Array,
-  _camera: Camera,
-  _sprites: SpriteInstance[],
-  _config: RenderConfig,
-): void {
-  throw new Error('NotImplemented: drawSprites (engine.md §4)');
+const TEXELS_PER_CELL = CELL_SIZE; // sprite texel height → world height (matches walls)
+
+/**
+ * Draw all world sprites, sorted far→near and clipped per column against the wall
+ * z-buffer (engine.md §4). Reuses `order` to avoid mutating the caller's array.
+ */
+export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]): void {
+  const { back, zBuffer, cam, W, H, brightness, levels, extralight } = f;
+  const n = sprites.length;
+  if (n === 0) return;
+
+  // Far-to-near order by squared distance (no sqrt needed for ordering).
+  order.length = n;
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => {
+    const sa = sprites[a]!;
+    const sb = sprites[b]!;
+    const da = (cam.posX - sa.x) ** 2 + (cam.posY - sa.y) ** 2;
+    const db = (cam.posX - sb.x) ** 2 + (cam.posY - sb.y) ** 2;
+    return db - da;
+  });
+
+  const invDet = 1 / (cam.planeX * cam.dirY - cam.dirX * cam.planeY);
+  const eyeAboveFloor = VIEW_HEIGHT / CELL_SIZE;
+  const half = H / 2;
+
+  for (let s = 0; s < n; s++) {
+    const sprite = sprites[order[s]!]!;
+    const tex = sprite.frame.texture;
+    const SPRW = tex.width;
+    const SPRH = tex.height;
+    const px = tex.pixels;
+
+    const dx = sprite.x - cam.posX;
+    const dy = sprite.y - cam.posY;
+    const transformX = invDet * (cam.dirY * dx - cam.dirX * dy);
+    const transformY = invDet * (-cam.planeY * dx + cam.planeX * dy); // depth
+    if (transformY <= 0.0001) continue; // behind camera
+
+    const screenX = (W / 2) * (1 + transformX / transformY);
+    const scale = H / transformY;
+    const spriteW = (SPRW / TEXELS_PER_CELL) * scale;
+    const spriteH = (SPRH / TEXELS_PER_CELL) * scale;
+
+    // Stand the sprite on the floor line at its depth (matches the flat cast), then
+    // apply vMove for floating things (engine.md §4.2).
+    const floorLine = half + eyeAboveFloor * scale;
+    const vMove = sprite.vMove / transformY;
+    const drawBottom = floorLine + vMove;
+    const drawTop = drawBottom - spriteH;
+    const leftX = screenX - spriteW / 2;
+
+    const startX = leftX < 0 ? 0 : Math.ceil(leftX);
+    const endX = Math.min(Math.ceil(leftX + spriteW), W);
+    const yStart = drawTop < 0 ? 0 : drawTop | 0;
+    const yEnd = drawBottom >= H ? H - 1 : drawBottom | 0;
+    if (yEnd < yStart) continue;
+
+    const lvl = sprite.fullbright ? 0 : lightLevel(transformY, sprite.light, extralight, levels);
+    const fLight = brightness[lvl]!;
+
+    for (let stripe = startX; stripe < endX; stripe++) {
+      if (transformY >= zBuffer[stripe]!) continue; // occluded by a nearer wall
+      let texX = (((stripe - leftX) * SPRW) / spriteW) | 0;
+      if (texX < 0) texX = 0;
+      else if (texX >= SPRW) texX = SPRW - 1;
+      if (sprite.frame.mirror) texX = SPRW - 1 - texX;
+
+      for (let y = yStart; y <= yEnd; y++) {
+        let texY = (((y - drawTop) * SPRH) / spriteH) | 0;
+        if (texY < 0) texY = 0;
+        else if (texY >= SPRH) texY = SPRH - 1;
+        const color = px[texY * SPRW + texX]!;
+        if ((color >>> 24) === 0) continue; // alpha-test cutout (DOOM 1-bit transparency)
+        back[y * W + stripe] = shade(color, fLight);
+      }
+    }
+  }
 }
 
-/** Composite the first-person weapon frame last, in screen space (engine.md §10). */
+/**
+ * Composite the first-person weapon frame last, in screen space, anchored to the
+ * bottom-center and lit by the current sector light + extralight (engine.md §10).
+ * `bobX`/`bobY` are screen-space offsets (0 when no bob data is threaded in).
+ */
 export function drawWeapon(
-  _back: Uint32Array,
-  _frame: SpriteFrame,
-  _config: RenderConfig,
-  _light: number,
-  _bobX: number,
-  _bobY: number,
+  back: Uint32Array,
+  W: number,
+  H: number,
+  frame: SpriteFrame,
+  brightness: Float64Array,
+  levels: number,
+  sectorLight: number,
+  extralight: number,
+  bobX: number,
+  bobY: number,
 ): void {
-  throw new Error('NotImplemented: drawWeapon (engine.md §10)');
+  const tex = frame.texture;
+  const fw = tex.width;
+  const fh = tex.height;
+  const px = tex.pixels;
+  const ox = (((W - fw) / 2 + bobX) | 0);
+  const oy = ((H - fh + bobY) | 0);
+  const lvl = lightLevel(0, sectorLight, extralight, levels);
+  const fLight = brightness[lvl]!;
+
+  for (let y = 0; y < fh; y++) {
+    const sy = oy + y;
+    if (sy < 0 || sy >= H) continue;
+    for (let x = 0; x < fw; x++) {
+      const sx = ox + x;
+      if (sx < 0 || sx >= W) continue;
+      const color = px[y * fw + x]!;
+      if ((color >>> 24) === 0) continue;
+      back[sy * W + sx] = shade(color, fLight);
+    }
+  }
+}
+
+/** Sector light at the camera cell — used to light the weapon overlay. */
+export function cameraCellLight(level: ILevelRuntime, camX: number, camY: number): number {
+  return level.lightAt(Math.floor(camX), Math.floor(camY));
 }
