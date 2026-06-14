@@ -7,10 +7,13 @@
 // hangs from the top and the cast continues THROUGH the opening so the room behind
 // renders progressively (engine.md §6.4) instead of leaving a void.
 import { CELL_SIZE } from '../core';
+import type { ILevelRuntime } from '../core';
 import type { Frame } from './frame';
 import { lightLevel, shade, SIDE_SHADE } from './lighting';
 
 const MAX_DDA_STEPS = 256; // guard against an unbounded ray in an unsealed map
+const SEAM_EPS = 1e-4; // a real floor/ceiling tier difference (heights are discrete)
+const SEAM_NEIGHBORS: ReadonlyArray<readonly [number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 /** A door cell is see-through (don't stop the cast) only while it is mid-open. */
 function isOpeningDoor(open: number, solid: boolean): boolean {
@@ -142,6 +145,26 @@ export function castWorld(f: Frame): void {
         // geometry behind the door. visFrac shrinks to 0 as the door fully opens.
         const drawBot = paintWallSlice(f, x, nextX, nextY, dist, side, eyeZ, half, ceilClip, floorClip, 1 - open);
         if (drawBot > ceilClip) ceilClip = drawBot;
+      } else {
+        // ── Height seams across a passable boundary (engine.md §7.3) ──────────────
+        // The DDA keeps walking into open cells, so a floor that RISES (a step/ledge/
+        // lift) or a ceiling that DROPS at this edge leaves a vertical gap the flats
+        // can't fill. Paint the textured riser face there and advance the matching
+        // clip frontier so the next cell's flat resumes above/below it — otherwise the
+        // raised tier shows through to void and things on it appear to float.
+        const fhB = level.floorHeightAt(nextX, nextY) / CELL_SIZE;
+        if (fhB > fh + SEAM_EPS) {
+          const key = seamTexKey(level, nextX, nextY, level.floorTextureAt(nextX, nextY));
+          const r = paintSeamStrip(f, x, dist, side, rayDirX, rayDirY, fhB, fh, key, level.lightAt(nextX, nextY), ceilClip, floorClip);
+          if (r.top < floorClip) floorClip = r.top;
+        }
+        const chB = level.ceilHeightAt(nextX, nextY) / CELL_SIZE;
+        if (chB < ch - SEAM_EPS) {
+          const flat = level.ceilTextureAt(nextX, nextY) ?? level.floorTextureAt(nextX, nextY);
+          const key = seamTexKey(level, nextX, nextY, flat);
+          const r = paintSeamStrip(f, x, dist, side, rayDirX, rayDirY, ch, chB, key, level.lightAt(nextX, nextY), ceilClip, floorClip);
+          if (r.bot > ceilClip) ceilClip = r.bot;
+        }
       }
 
       mapX = nextX;
@@ -219,4 +242,89 @@ function paintWallSlice(
     back[y * W + x] = shade(texPixels[ty * TEX + texX]!, f0);
   }
   return (drawBot | 0) < ceilTop ? ceilTop : drawBot | 0;
+}
+
+/**
+ * Texture key for a floor/ceiling step face at a passable boundary. The grid stores no
+ * per-edge "lower/upper" texture (MapData has only wall + flat ids), so prefer the
+ * stepped cell's own wall texture, then a neighbouring solid wall's (the wall the step
+ * abuts), and finally the supplied flat (the tier's own floor/ceiling) so the riser is
+ * always a solid surface rather than void.
+ */
+function seamTexKey(level: ILevelRuntime, cx: number, cy: number, flatFallback: string): string {
+  const own = level.wallTextureAt(cx, cy);
+  if (own) return own;
+  for (const [dx, dy] of SEAM_NEIGHBORS) {
+    const adj = level.wallTextureAt(cx + dx, cy + dy);
+    if (adj) return adj;
+  }
+  return flatFallback;
+}
+
+/**
+ * Paint one vertical textured strip for a floor/ceiling height seam hit at `dist`,
+ * mapping world-z [zBot, zTop] (zTop is the higher edge → nearer the top of the screen)
+ * across the texture with the SAME texX / distance-and-side lighting math as full walls.
+ * Clipped to the still-open band [bandTop, bandBot). Returns the integer rows actually
+ * covered so the caller advances its clip frontier (floor seam → strip top; ceiling
+ * seam → strip bottom).
+ */
+function paintSeamStrip(
+  f: Frame,
+  x: number,
+  dist: number,
+  side: number,
+  rayDirX: number,
+  rayDirY: number,
+  zTop: number,
+  zBot: number,
+  texKey: string,
+  sectorLight: number,
+  bandTop: number,
+  bandBot: number,
+): { top: number; bot: number } {
+  const { back, cam, W, H, brightness, levels, extralight, eyeZ } = f;
+  const half = H / 2;
+  const invD = H / dist;
+  const rowTop = half + (eyeZ - zTop) * invD; // higher tier → smaller (upper) row
+  const rowBot = half + (eyeZ - zBot) * invD;
+
+  let yTop = rowTop | 0;
+  if (yTop < bandTop) yTop = bandTop;
+  if (yTop < 0) yTop = 0;
+  let yBot = rowBot | 0;
+  if (yBot > bandBot) yBot = bandBot; // bottom is exclusive — stop at the frontier
+  if (yBot > H) yBot = H;
+  if (yTop >= yBot) return { top: yTop, bot: yBot };
+
+  const tex = f.resolve(texKey);
+  const TEX = tex.width;
+  const texH = tex.height;
+  const texPixels = tex.pixels;
+
+  let wallX = side === 0 ? cam.posY + dist * rayDirY : cam.posX + dist * rayDirX;
+  wallX -= Math.floor(wallX);
+  let texX = (wallX * TEX) | 0;
+  if (side === 0 && rayDirX > 0) texX = TEX - texX - 1;
+  if (side === 1 && rayDirY < 0) texX = TEX - texX - 1;
+  if (texX < 0) texX = 0;
+  else if (texX >= TEX) texX = TEX - 1;
+
+  const texSpan = (zTop - zBot) * texH; // 1 cell unit of world height = one texture tile
+  const screenSpan = rowBot - rowTop;
+  const step = screenSpan > 0 ? texSpan / screenSpan : 0;
+  let texPos = (yTop - rowTop) * step; // top-pegged at the higher tier
+
+  const distLvl = lightLevel(dist, sectorLight, extralight, levels);
+  let f0 = brightness[distLvl]!;
+  if (side === 1) f0 *= SIDE_SHADE;
+
+  for (let y = yTop; y < yBot; y++) {
+    let ty = texPos | 0;
+    ty %= texH;
+    if (ty < 0) ty += texH;
+    texPos += step;
+    back[y * W + x] = shade(texPixels[ty * TEX + texX]!, f0);
+  }
+  return { top: yTop, bot: yBot };
 }
