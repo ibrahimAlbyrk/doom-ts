@@ -10,7 +10,7 @@ import { applyDamage, fireProjectile, hitscan } from '../combat';
 import type { ProjectileSpec } from '../entities';
 import { moveEntity } from '../world';
 import { angleTo, inMeleeRange, targetEntity } from './targeting';
-import { CHARGE_MAX_TICS, MONSTER_SPREAD_SHIFT, attackTics, memoOf } from './tuning';
+import { CHARGE_MAX_TICS, MONSTER_SPREAD_SHIFT, attackTics, memoOf, projectileSpeed } from './tuning';
 import { CombatBus } from '../combat';
 
 /** Run one attack-state tic for `m` (melee or missile, including Lost Soul charge). */
@@ -35,7 +35,7 @@ export function attackThink(world: IWorld, m: Monster, rng: Rng, combat: CombatB
   }
 
   m.stateTimer += tics;
-  if (m.stateTimer >= attackTics(m.type)) {
+  if (m.stateTimer >= attackTics(m.type, world.skill)) {
     m.state = 'chase';
     m.stateTimer = 0;
   }
@@ -71,7 +71,7 @@ function performAttack(world: IWorld, m: Monster, target: Entity, rng: Rng, comb
   } else if (a.kind === 'projectile' && a.projectile) {
     const spec: ProjectileSpec = {
       damage: a.projectile.roll,
-      speed: a.projectile.speed,
+      speed: projectileSpeed(a.projectile.speed, world.skill),
       sprite: a.projectile.sprite,
       splashRadius: a.projectile.splashRadius ?? 0,
     };

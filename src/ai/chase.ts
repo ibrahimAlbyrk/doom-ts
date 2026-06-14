@@ -7,7 +7,7 @@ import { TAU, normalizeAngle } from '../core';
 import { ENEMIES } from '../data';
 import { moveEntity, positionFits } from '../world';
 import { angleTo, dist2d, hasLOS, inMeleeRange, targetEntity } from './targeting';
-import { MISSILE_RANGE, MOVE_RESELECT_MAX, MOVE_RESELECT_MIN, hasMelee, hasRanged, memoOf } from './tuning';
+import { MISSILE_RANGE, MOVE_RESELECT_MAX, MOVE_RESELECT_MIN, hasMelee, hasRanged, memoOf, moveSpeedMul } from './tuning';
 
 const DIR_COUNT = 8;
 const DIR_STEP = TAU / DIR_COUNT;
@@ -72,7 +72,7 @@ function stepToward(world: IWorld, m: Monster, rng: Rng, target: Entity, tics: n
     memo.moveCount = rng.range(MOVE_RESELECT_MIN, MOVE_RESELECT_MAX);
   }
 
-  const speed = ENEMIES[m.type].speed * tics;
+  const speed = ENEMIES[m.type].speed * moveSpeedMul(m.type, world.skill) * tics;
   const moved = moveEntity(m, Math.cos(memo.moveDir) * speed, Math.sin(memo.moveDir) * speed, level);
   if (!moved) memo.moveCount = 0; // blocked — re-pick next tic
 }
@@ -83,7 +83,7 @@ function newChaseDir(world: IWorld, m: Monster, target: Entity, tics: number): n
   const want = angleTo(m, target);
   const base = Math.round(normalizeAngle(want) / DIR_STEP);
   const offsets = [0, 1, -1, 2, -2, 3, -3, 4];
-  const step = ENEMIES[m.type].speed * tics;
+  const step = ENEMIES[m.type].speed * moveSpeedMul(m.type, world.skill) * tics;
   for (const off of offsets) {
     const dir = (base + off) * DIR_STEP;
     if (probeFits(world, m, dir, step)) return dir;

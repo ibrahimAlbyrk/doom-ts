@@ -6,7 +6,7 @@ import type { IWorld, Monster } from '../core';
 import { cellOf } from '../world';
 import { isAliveMonster, isAlivePlayer } from '../combat';
 import { hasLOS, inFrontCone, wake } from './targeting';
-import { SOUND_TRAVEL_CELLS } from './tuning';
+import { reactionTics, soundTravelCells } from './tuning';
 
 /** A_Look — true (and target set) if this monster can see the player right now.
  *  A dead/dying monster never sights: a corpse must never re-acquire a target or
@@ -28,15 +28,16 @@ export function lookForTarget(world: IWorld, m: Monster): boolean {
  * `maxCells`; without one (open test space) every idle monster hears it. Returns
  * how many woke.
  */
-export function noiseAlert(world: IWorld, x: number, y: number, makerId: number, maxCells = SOUND_TRAVEL_CELLS): number {
+export function noiseAlert(world: IWorld, x: number, y: number, makerId: number, maxCells = soundTravelCells(world.skill)): number {
   const idle = world.monsters.filter((m) => m.state === 'idle' && isAliveMonster(m));
   if (idle.length === 0) return 0;
 
   const reached = floodCells(world, x, y, maxCells);
+  const reaction = reactionTics(world.skill);
   let woke = 0;
   for (const m of idle) {
     if (reached === null || reached.has(cellKey(cellOf(m.x), cellOf(m.y)))) {
-      wake(m, makerId);
+      wake(m, makerId, reaction);
       woke++;
     }
   }

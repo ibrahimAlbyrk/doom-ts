@@ -6,7 +6,7 @@
 // on the CombatBus. This machine YIELDS to those states (plays them out) and reacts
 // to the bus for infighting, rather than rolling pain/death itself.
 import type { IWorld, Monster, Rng, Faction, MonsterType } from '../core';
-import { REACTION_TICS, STOP_SPEED } from '../core';
+import { STOP_SPEED } from '../core';
 import { ENEMIES } from '../data';
 import { stepMovement } from '../world';
 import { CombatBus, isAliveMonster } from '../combat';
@@ -14,7 +14,7 @@ import { lookForTarget, noiseAlert } from './sight';
 import { chaseThink } from './chase';
 import { attackThink } from './attack';
 import { wake } from './targeting';
-import { DEATH_SETTLE_TICS, PAIN_TICS, sameSpecies } from './tuning';
+import { DEATH_SETTLE_TICS, PAIN_TICS, RESPAWN_TICS, reactionTics, respawns, sameSpecies } from './tuning';
 
 /** Advance every monster one fixed step (`tics` DOOM tics, may be fractional). */
 export function updateMonsters(world: IWorld, rng: Rng, combat: CombatBus, tics = 1): void {
@@ -26,13 +26,17 @@ function updateMonster(world: IWorld, m: Monster, rng: Rng, combat: CombatBus, t
 
   switch (m.state) {
     case 'dead':
+      maybeRespawn(world, m, tics);
       return;
 
     case 'death':
     case 'gib':
       m.stateTimer += tics;
       integrateMomentum(world, m, tics); // let the corpse slide to rest
-      if (m.stateTimer >= DEATH_SETTLE_TICS) m.state = 'dead';
+      if (m.stateTimer >= DEATH_SETTLE_TICS) {
+        m.state = 'dead';
+        m.stateTimer = 0; // restart the clock for the respawn delay
+      }
       return;
 
     case 'pain':
@@ -48,7 +52,7 @@ function updateMonster(world: IWorld, m: Monster, rng: Rng, combat: CombatBus, t
       if (lookForTarget(world, m)) {
         m.state = 'chase';
         m.stateTimer = 0;
-        m.reactionTime = REACTION_TICS;
+        m.reactionTime = reactionTics(world.skill);
         emitSightSound(m, rng, combat); // monster just woke and saw the player
       }
       return;
@@ -80,6 +84,26 @@ function emitActiveSound(m: Monster, combat: CombatBus): void {
   if (active) combat.emitGame('sfx', { sound: active, x: m.x, y: m.y });
 }
 
+/**
+ * Nightmare respawn (doom-design §7): once a corpse has lain `RESPAWN_TICS` tics it
+ * stands back up in place as a fresh idle monster (full health, no target), so the
+ * map never empties. No-op on every skill whose respawn flag is unset — which is
+ * what keeps death PERMANENT on skills 1–4.
+ */
+function maybeRespawn(world: IWorld, m: Monster, tics: number): void {
+  if (!respawns(world.skill)) return;
+  m.stateTimer += tics;
+  if (m.stateTimer < RESPAWN_TICS) return;
+  m.health = ENEMIES[m.type].health;
+  m.state = 'idle';
+  m.stateTimer = 0;
+  m.reactionTime = 0; // set when it re-acquires a target
+  m.target = null;
+  m.velX = 0;
+  m.velY = 0;
+  m.flinchImmune = false;
+}
+
 /** Carry leftover momentum (e.g. combat knockback) and let friction settle it. */
 function integrateMomentum(world: IWorld, m: Monster, tics: number): void {
   if (!world.level) return;
@@ -97,14 +121,15 @@ export function onDamagedBy(
   attackerId: number,
   attackerFaction: Faction,
   attackerType: MonsterType | null,
+  reaction?: number,
 ): void {
   if (!isAliveMonster(victim) || attackerId === victim.id) return;
   if (attackerFaction === 'player') {
-    wake(victim, attackerId);
+    wake(victim, attackerId, reaction);
     return;
   }
   if (attackerFaction === 'monster' && attackerType && !sameSpecies(victim.type, attackerType)) {
-    wake(victim, attackerId);
+    wake(victim, attackerId, reaction);
   }
 }
 
@@ -125,7 +150,7 @@ export function createMonsterAI(world: IWorld, rng: Rng, combat: CombatBus): Mon
     const victim = world.monsters.find((m) => m.id === e.targetId);
     if (!victim) return;
     const attacker = world.monsters.find((m) => m.id === e.sourceId);
-    onDamagedBy(victim, e.sourceId, e.sourceFaction, attacker ? attacker.type : null);
+    onDamagedBy(victim, e.sourceId, e.sourceFaction, attacker ? attacker.type : null, reactionTics(world.skill));
   });
 
   return {

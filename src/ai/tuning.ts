@@ -2,7 +2,8 @@
 // into each actor's state-table tic counts. EnemyDef (src/data, frozen) carries
 // stats + attack damage but NOT attack-state durations, so the canonical tic
 // counts live here (doom-design.md §3 "attack cooldown baked into state durations").
-import type { EnemyDef, Monster, MonsterType } from '../core';
+import type { EnemyDef, Monster, MonsterType, SkillId } from '../core';
+import { SKILLS } from '../data';
 
 /** Tics a monster sits in its attack state (fires once, then back to chase).
  *  This IS the refire cadence — derived from each actor's S_*_ATK frame tics. */
@@ -20,8 +21,13 @@ const ATTACK_TICS: Record<MonsterType, number> = {
   spiderMastermind: 8, // rapid chaingun
 };
 
-export function attackTics(type: MonsterType): number {
-  return ATTACK_TICS[type];
+/** Refire cadence shortening under fast-monsters (~45% quicker re-attacks), floored
+ *  so the attack stays readable (expert: never below 0.5×). */
+const FAST_ATTACK_CADENCE = 0.55;
+
+export function attackTics(type: MonsterType, skill: SkillId): number {
+  const base = ATTACK_TICS[type];
+  return fastMonsters(skill) ? base * FAST_ATTACK_CADENCE : base;
 }
 
 /** Brief flinch length (doom-design §3 "interrupts current action ~6 tics"). */
@@ -33,8 +39,61 @@ export const MOVE_RESELECT_MIN = 8;
 export const MOVE_RESELECT_MAX = 16;
 /** Max tics a Lost Soul stays in its charge before giving up. */
 export const CHARGE_MAX_TICS = 20;
-/** Sound-flood reach in grid cells (~2048 mu at 64 mu/cell ≈ MISSILERANGE). */
-export const SOUND_TRAVEL_CELLS = 32;
+/**
+ * Sound-flood reach in grid cells, per skill (1..5). A shot wakes the room you're
+ * standing in plus the edge of one adjacent room through a doorway — NOT the whole
+ * level. The radius cap is the grid approximation of DOOM's unbounded-until-
+ * soundblock propagation (doom-design §9.7); walls + CLOSED doors still block the
+ * flood (the designer's "fight one room at a time" tool). Monotonic by skill:
+ * easier = smaller reach, Nightmare largest. Expert-tuned.
+ */
+const SOUND_TRAVEL_BY_SKILL: Record<SkillId, number> = { 1: 6, 2: 7, 3: 9, 4: 11, 5: 13 };
+
+export function soundTravelCells(skill: SkillId): number {
+  return SOUND_TRAVEL_BY_SKILL[skill];
+}
+
+/**
+ * Sight→first-attack delay (tics) per skill. Baseline 8; easier skills give the
+ * player more grace before the first shot, Nightmare reacts fast (floor 4 — never
+ * an instant turret). Expert-tuned, monotonic.
+ */
+const REACTION_BY_SKILL: Record<SkillId, number> = { 1: 12, 2: 10, 3: 8, 4: 7, 5: 4 };
+
+export function reactionTics(skill: SkillId): number {
+  return REACTION_BY_SKILL[skill];
+}
+
+// ── Nightmare fast-monsters + respawn (gated on the skill flags; doom-design §7) ──
+
+/** True on skills whose fastMonsters flag is set (Nightmare). */
+export function fastMonsters(skill: SkillId): boolean {
+  return SKILLS[skill].fastMonsters;
+}
+
+/** True on skills whose respawn flag is set (Nightmare). */
+export function respawns(skill: SkillId): boolean {
+  return SKILLS[skill].respawn;
+}
+
+/** Projectile speed under fast-monsters: ~2×, capped at 20 mu/tic so bruiser shots
+ *  stay dodgeable on the grid (imp/caco 10→20, baron/knight 15→20; doom-design §7). */
+const FAST_PROJECTILE_CAP = 20;
+
+export function projectileSpeed(base: number, skill: SkillId): number {
+  return fastMonsters(skill) ? Math.min(base * 2, FAST_PROJECTILE_CAP) : base;
+}
+
+/** Move-speed multiplier under fast-monsters. Only the melee closers (demon/spectre)
+ *  speed up; a global 2× chase is chaotic on a grid (expert guidance). */
+export function moveSpeedMul(type: MonsterType, skill: SkillId): number {
+  if (!fastMonsters(skill)) return 1;
+  return type === 'demon' || type === 'spectre' ? 2 : 1;
+}
+
+/** Nightmare respawn delay in tics, counted from when the corpse settles (death
+ *  animation complete). ~12 s at 35 tics/s = 420 (doom-design §7 telefrag-respawn). */
+export const RESPAWN_TICS = 420;
 /** Distance (mu) a monster will open fire from — DOOM MISSILERANGE. */
 export const MISSILE_RANGE = 2048;
 /** Horizontal spread for monster hitscan: `(P_Random-P_Random) << 20` (A_PosAttack). */

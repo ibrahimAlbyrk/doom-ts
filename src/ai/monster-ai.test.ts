@@ -6,12 +6,12 @@
 // damage), pain interrupts an action, the death→dead transition, that death is
 // PERMANENT (a corpse never wakes/re-targets/flips to a live state under sight,
 // continued fire, pain, or infighting), and infighting.
-import type { MapData, Monster, MonsterType } from '../core';
+import type { MapData, Monster, MonsterType, SkillId } from '../core';
 import { CELL_SIZE, EventBus, Rng, type GameEventMap } from '../core';
 import { World, createMonster } from '../entities';
 import { LevelRuntime } from '../world';
 import { CombatBus, applyDamage } from '../combat';
-import { DEATH_SETTLE_TICS, PAIN_TICS } from './tuning';
+import { DEATH_SETTLE_TICS, PAIN_TICS, RESPAWN_TICS, attackTics, moveSpeedMul, projectileSpeed } from './tuning';
 import { createMonsterAI, updateMonsters, lookForTarget, noiseAlert } from './index';
 
 // ── assert plumbing ───────────────────────────────────────────────────────────
@@ -284,6 +284,108 @@ function testInfighting(): void {
   ai.dispose();
 }
 
+// ── 13. noise wakes only the immediate area, skill-scaled ──────────────────────-
+// Regression for "one pistol shot wakes the WHOLE map". A shot floods outward a
+// SKILL-SCALED number of cells; nearby monsters wake, a monster across the map
+// stays asleep, and a harder skill reaches further than an easier one.
+function noiseScene(skill: SkillId): { near: Monster; mid: Monster; s5only: Monster; far: Monster; woke: number } {
+  const world = new World();
+  world.level = new LevelRuntime(makeMap(30, 6)); // open arena, one row of monsters
+  world.skill = skill;
+  const C = CELL_SIZE;
+  const y = 2 * C + 32; // monster row (cell y=2)
+  const cellX = (cx: number): number => cx * C + 32;
+  // BFS distance from the shot cell (x=2) along the open row = |cx − 2| cells.
+  const near = spawnMon(world, 'zombieman', cellX(7), y, FACING_AWAY); //  5 cells
+  const mid = spawnMon(world, 'zombieman', cellX(10), y, FACING_AWAY); //  8 cells
+  const s5only = spawnMon(world, 'zombieman', cellX(14), y, FACING_AWAY); // 12 cells
+  const far = spawnMon(world, 'zombieman', cellX(24), y, FACING_AWAY); // 22 cells (across the map)
+  const woke = noiseAlert(world, cellX(2), y, world.player.id);
+  return { near, mid, s5only, far, woke };
+}
+
+function testNoiseRadiusSkillScaled(): void {
+  console.log('noise wakes only the immediate area (skill-scaled)');
+
+  const s1 = noiseScene(1); // radius 6 cells
+  ok(s1.woke === 1, `ITYTD shot woke ${s1.woke} (only the nearby monster)`);
+  ok(s1.near.state === 'chase', 'ITYTD: the nearby monster woke');
+  ok(s1.mid.state === 'idle' && s1.s5only.state === 'idle', 'ITYTD: monsters past the small radius stay asleep');
+  ok(s1.far.state === 'idle', 'ITYTD: the monster across the map stays ASLEEP');
+
+  const s3 = noiseScene(3); // radius 9 cells
+  ok(s3.woke === 2, `HMP shot woke ${s3.woke} (room + one doorway over)`);
+  ok(s3.near.state === 'chase' && s3.mid.state === 'chase', 'HMP: room + adjacent monsters woke');
+  ok(s3.s5only.state === 'idle' && s3.far.state === 'idle', 'HMP: distant monsters stay ASLEEP (not the whole map)');
+
+  const s5 = noiseScene(5); // radius 13 cells (the cap)
+  ok(s5.woke === 3, `NM shot woke ${s5.woke} (largest reach)`);
+  ok(s5.s5only.state === 'chase', 'NM: larger radius reaches one room further');
+  ok(s5.far.state === 'idle', 'NM: even the largest radius does NOT wake the far side of the map');
+
+  ok(s1.woke < s3.woke && s3.woke < s5.woke, `wake reach scales with skill (${s1.woke} < ${s3.woke} < ${s5.woke})`);
+}
+
+// ── 14. fast monsters (skill 5) change behavior, not just the flag ─────────────-
+function testFastMonstersOnNightmare(): void {
+  console.log('fast monsters on Nightmare');
+
+  // (a) projectile speed: imp/caco 10 → 20, bruiser 15 → 20 (capped), unchanged < NM.
+  ok(projectileSpeed(10, 3) === 10, 'HMP imp fireball keeps base speed 10');
+  ok(projectileSpeed(10, 5) === 20, 'NM imp fireball doubles to 20');
+  ok(projectileSpeed(15, 5) === 20, 'NM bruiser shot caps at 20 (stays dodgeable)');
+
+  // …and an imp actually fires the faster projectile when the world is on NM.
+  const a = setup();
+  a.world.skill = 5;
+  chasing(spawnMon(a.world, 'imp', 600, 200, FACING_PLAYER), a.world.player.id);
+  for (let i = 0; i < 10; i++) updateMonsters(a.world, a.rng, a.combat, 1);
+  ok(a.world.projectiles.length >= 1 && a.world.projectiles[0]!.speed === 20, `NM imp projectile speed is ${a.world.projectiles[0]?.speed} (fast)`);
+
+  // (b) move speed: demon closes distance noticeably faster on NM; imps do not speed up.
+  const demonRun = (skill: SkillId): number => {
+    const s = setup();
+    s.world.skill = skill;
+    const d = chasing(spawnMon(s.world, 'demon', 1000, 200, FACING_PLAYER), s.world.player.id);
+    const x0 = d.x;
+    for (let i = 0; i < 5; i++) updateMonsters(s.world, s.rng, s.combat, 1);
+    return x0 - d.x; // mu advanced toward the player (−x)
+  };
+  const hmpMove = demonRun(3);
+  const nmMove = demonRun(5);
+  ok(nmMove > hmpMove * 1.5, `NM demon moves faster over 5 tics: ${hmpMove.toFixed(0)} → ${nmMove.toFixed(0)} mu`);
+  ok(moveSpeedMul('demon', 5) === 2 && moveSpeedMul('imp', 5) === 1, 'only the melee closers (demon/spectre) get the 2× move');
+
+  // (c) attack cadence: refire is quicker on NM but never below 0.5× (stays readable).
+  ok(attackTics('imp', 5) < attackTics('imp', 3), 'NM shortens the imp refire cadence');
+  ok(attackTics('imp', 5) >= attackTics('imp', 3) * 0.5, 'NM cadence never drops below 0.5× the base');
+}
+
+// ── 15. respawn (skill 5) resurrects corpses; lower skills stay permanent ──────-
+function testRespawnOnNightmare(): void {
+  console.log('respawn on Nightmare');
+
+  const deadCorpse = (skill: SkillId): { s: Setup; m: Monster } => {
+    const s = setup();
+    s.world.skill = skill;
+    const m = chasing(spawnMon(s.world, 'zombieman', 300, 200, FACING_PLAYER), s.world.player.id);
+    applyDamage(s.world, m, 25, s.world.player.id, 'player', s.rng, s.combat); // 20hp → −5: lethal, not gib
+    for (let i = 0; i < DEATH_SETTLE_TICS + 1; i++) updateMonsters(s.world, s.rng, s.combat, 1);
+    ok(m.state === 'dead', `corpse settled on skill ${skill}`);
+    s.world.player.x = 4000; // park the player far away so a fresh corpse just lies there
+    s.world.player.y = 4000;
+    return { s, m };
+  };
+
+  const nm = deadCorpse(5);
+  for (let i = 0; i < RESPAWN_TICS + 2; i++) updateMonsters(nm.s.world, nm.s.rng, nm.s.combat, 1);
+  ok(nm.m.state !== 'dead' && nm.m.health > 0, `NM corpse stood back up (state ${nm.m.state}, hp ${nm.m.health})`);
+
+  const hmp = deadCorpse(3);
+  for (let i = 0; i < RESPAWN_TICS + 2; i++) updateMonsters(hmp.s.world, hmp.s.rng, hmp.s.combat, 1);
+  ok(hmp.m.state === 'dead' && hmp.m.health <= 0, 'non-NM corpse stays permanently dead (respawn gated off)');
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────--
 function main(): void {
   testWakeOnSight();
@@ -297,6 +399,9 @@ function main(): void {
   testDeathIsPermanent();
   testCorpseIgnoresDamageAndInfighting();
   testInfighting();
+  testNoiseRadiusSkillScaled();
+  testFastMonstersOnNightmare();
+  testRespawnOnNightmare();
   console.log(`\nAll ${passed} AI assertions passed.`);
 }
 

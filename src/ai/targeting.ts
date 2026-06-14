@@ -44,12 +44,13 @@ export function targetEntity(world: IWorld, m: Monster): Entity | null {
   return mon && isAliveMonster(mon) ? mon : null;
 }
 
-/** Acquire `targetId`; a sleeping monster wakes into chase with a reaction delay. */
-export function wake(m: Monster, targetId: number): void {
+/** Acquire `targetId`; a sleeping monster wakes into chase with a reaction delay
+ *  (skill-scaled by the caller; falls back to the baseline when unspecified). */
+export function wake(m: Monster, targetId: number, reaction: number = REACTION_TICS): void {
   m.target = targetId;
   if (m.state === 'idle') {
     m.state = 'chase';
     m.stateTimer = 0;
-    m.reactionTime = REACTION_TICS;
+    m.reactionTime = reaction;
   }
 }
