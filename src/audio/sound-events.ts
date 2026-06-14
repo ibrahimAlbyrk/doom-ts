@@ -26,6 +26,7 @@ const PRIORITY = {
   impact: 65,
   monsterPain: 55,
   pickup: 45,
+  world: 40, // doors/lifts/teleport + monster sight/active ambience
 } as const;
 
 const PLAYER_PAIN = 'DSPLPAIN';
@@ -52,6 +53,9 @@ export class GameSoundEvents {
       bus.on('player:died', () => this.audio.play(PLAYER_DEATH, { priority: PRIORITY.playerDeath })),
       bus.on('pickup:collected', () => this.audio.play(ITEM_PICKUP, { priority: PRIORITY.pickup })),
       bus.on('powerup:started', () => this.audio.play(POWERUP_PICKUP, { priority: PRIORITY.pickup })),
+      // Generic positioned sound (doors/lifts/teleport/monster sight+active). The
+      // emitter already carries world coords, so no EntityLocator lookup is needed.
+      bus.on('sfx', ({ sound, x, y }) => this.audio.play(sound, { x, y, priority: PRIORITY.world })),
     );
   }
 

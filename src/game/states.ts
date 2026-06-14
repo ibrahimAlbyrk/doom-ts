@@ -1,14 +1,12 @@
 // Game-state machine — implements the IGameState contract (web-arch.md §3).
-// BOOT → LOADING → TITLE → MENU → PLAYING ⇄ PAUSED → INTERMISSION → … and CREDITS.
-//
-// SCAFFOLD NOTE: states render simple placeholders to the 2D context so the app boots
-// to a real title/loading screen. The world simulation + raycaster render path is wired
-// by their respective workers (PlayingState dispatches into world/render/ai/etc.). The
-// CREDITS state is implemented (the required Freedoom About screen).
+// BOOT → LOADING → TITLE → MENU → PLAYING ⇄ PAUSED → INTERMISSION → (next | VICTORY),
+// PLAYING → GAMEOVER, and the Freedoom CREDITS screen. Each state delegates the real
+// work to the shared GameSession; the states own only screen flow + per-screen draw.
 import type { GameStateId, IGameState, GameContext } from '../core';
-import { drawCredits } from '../ui';
-
-const LOAD_SECONDS = 1.2;
+import { FIXED_STEP } from '../core';
+import { AssetStore, AssetLoader } from '../assets';
+import { drawTitle, drawGameOver, drawCredits, readMenuInput } from '../ui';
+import type { GameSession, TicCommand } from './session';
 
 function fill(ctx: CanvasRenderingContext2D, w: number, h: number, color: string): void {
   ctx.fillStyle = color;
@@ -33,6 +31,8 @@ function centerText(
 abstract class BaseState implements IGameState {
   abstract readonly id: GameStateId;
   protected ctx!: GameContext;
+
+  constructor(protected readonly session: GameSession) {}
 
   onEnter(ctx: GameContext): void {
     this.ctx = ctx;
@@ -62,20 +62,43 @@ class BootState extends BaseState {
 class LoadingState extends BaseState {
   readonly id = 'loading' as const;
   private progress = 0;
+  private done = false;
+  private started = false;
+  private error: string | null = null;
 
   override onEnter(ctx: GameContext): void {
     super.onEnter(ctx);
-    this.progress = 0;
+    if (this.started) return;
+    this.started = true;
+    void this.load();
   }
 
-  override update(dt: number): void {
-    // SCAFFOLD: simulate load progress (the real AssetLoader.loadAll drops in here).
-    this.progress = Math.min(1, this.progress + dt / LOAD_SECONDS);
-    if (this.progress >= 1) this.ctx.transition('title');
+  private async load(): Promise<void> {
+    try {
+      const loader = new AssetLoader(this.ctx.assets as AssetStore, this.ctx.audio);
+      await loader.loadAll((p) => {
+        this.progress = p.total ? p.loaded / p.total : 0;
+      });
+      const palette = this.ctx.assets.getPalette();
+      if (palette) this.ctx.renderer.setPalette(palette);
+      this.ctx.renderer.setAssets(this.ctx.assets);
+      this.done = true;
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  override update(): void {
+    if (this.done) this.ctx.transition('title');
   }
 
   render(ctx2d: CanvasRenderingContext2D): void {
     fill(ctx2d, this.w, this.h, '#000');
+    if (this.error) {
+      centerText(ctx2d, 'LOAD ERROR', this.w / 2, this.h / 2 - 10, '10px monospace', '#c0392b');
+      centerText(ctx2d, this.error, this.w / 2, this.h / 2 + 6, '6px monospace', '#888');
+      return;
+    }
     centerText(ctx2d, 'LOADING', this.w / 2, this.h / 2 - 14, '12px monospace', '#c9b070');
     const barW = Math.floor(this.w * 0.6);
     const barX = Math.floor((this.w - barW) / 2);
@@ -90,105 +113,177 @@ class LoadingState extends BaseState {
 class TitleState extends BaseState {
   readonly id = 'title' as const;
   override update(): void {
-    if (this.ctx.input.wasPressed('use')) this.ctx.transition('menu');
-    else if (this.ctx.input.wasPressed('automap')) this.ctx.transition('credits');
+    if (this.ctx.input.wasPressed('use')) {
+      void this.ctx.audio.resume();
+      this.ctx.transition('menu');
+    } else if (this.ctx.input.wasPressed('automap')) {
+      this.ctx.transition('credits');
+    }
   }
   render(ctx2d: CanvasRenderingContext2D): void {
-    fill(ctx2d, this.w, this.h, '#100808');
-    centerText(ctx2d, 'DOOM // TS', this.w / 2, this.h / 2 - 16, 'bold 20px monospace', '#c0392b');
-    centerText(ctx2d, 'Canvas 2D Raycaster', this.w / 2, this.h / 2 + 4, '8px monospace', '#888');
-    centerText(ctx2d, '[E] Start    [Tab] Credits', this.w / 2, this.h - 24, '7px monospace', '#c9b070');
+    drawTitle(ctx2d, this.session.cache, this.w, this.h);
   }
 }
 
 class MenuState extends BaseState {
   readonly id = 'menu' as const;
+  override onEnter(ctx: GameContext): void {
+    super.onEnter(ctx);
+    this.session.menus.open('main');
+  }
   override update(): void {
-    if (this.ctx.input.wasPressed('use')) {
-      void this.ctx.audio.resume(); // unlock audio on a user gesture
-      this.ctx.transition('playing');
-    } else if (this.ctx.input.wasPressed('automap')) {
-      this.ctx.transition('credits');
-    } else if (this.ctx.input.wasPressed('pause')) {
-      this.ctx.transition('title');
+    const cmd = this.session.menus.update(readMenuInput(this.ctx.input));
+    if (!cmd) return;
+    switch (cmd.type) {
+      case 'startGame':
+        void this.ctx.audio.resume();
+        this.session.startNewGame(cmd.skill);
+        this.ctx.transition('playing');
+        break;
+      case 'showCredits':
+        this.ctx.transition('credits');
+        break;
+      case 'quit':
+      case 'exitMenu':
+        this.ctx.transition('title');
+        break;
+      default:
+        break;
     }
   }
   render(ctx2d: CanvasRenderingContext2D): void {
     fill(ctx2d, this.w, this.h, '#0c0c10');
-    centerText(ctx2d, 'MAIN MENU', this.w / 2, 40, 'bold 14px monospace', '#c9b070');
-    centerText(ctx2d, '[E] New Game', this.w / 2, this.h / 2 - 8, '9px monospace', '#ddd');
-    centerText(ctx2d, '[Tab] Credits', this.w / 2, this.h / 2 + 8, '9px monospace', '#ddd');
-    centerText(ctx2d, '[Esc] Back', this.w / 2, this.h / 2 + 24, '9px monospace', '#888');
+    this.session.menus.draw(ctx2d, this.w, this.h);
   }
 }
 
 class PlayingState extends BaseState {
   readonly id = 'playing' as const;
-  override update(): void {
-    // SCAFFOLD: the fixed-step sim (player/monsters/projectiles/pickups, world doors)
-    // is dispatched here once those systems land. Pause is wired now.
-    if (this.ctx.input.wasPressed('pause')) this.ctx.transition('paused');
+  private cmd: TicCommand | null = null;
+
+  override onEnter(ctx: GameContext): void {
+    super.onEnter(ctx);
+    this.cmd = null;
   }
-  render(ctx2d: CanvasRenderingContext2D): void {
-    fill(ctx2d, this.w, this.h, '#000');
-    centerText(ctx2d, 'PLAYING (renderer stub)', this.w / 2, this.h / 2, '9px monospace', '#3a3');
-    centerText(ctx2d, '[Esc] Pause', this.w / 2, this.h - 16, '7px monospace', '#666');
+
+  override update(): void {
+    if (this.cmd === null) this.cmd = this.session.readCommand();
+    if (this.cmd.pause) {
+      this.cmd = null;
+      this.ctx.transition('paused');
+      return;
+    }
+    const result = this.session.tic(this.cmd);
+    if (result === 'dead') {
+      this.cmd = null;
+      this.ctx.transition('gameover');
+    } else if (result === 'exit') {
+      this.cmd = null;
+      this.ctx.transition('intermission');
+    }
+  }
+
+  render(_ctx2d: CanvasRenderingContext2D, alpha: number): void {
+    this.session.renderWorld(alpha);
+    this.cmd = null; // frame boundary: rebuild the command next frame
   }
 }
 
 class PausedState extends BaseState {
   readonly id = 'paused' as const;
-  override update(): void {
-    if (this.ctx.input.wasPressed('pause')) this.ctx.transition('playing');
+  override onEnter(ctx: GameContext): void {
+    super.onEnter(ctx);
+    this.session.menus.open('pause');
   }
-  render(ctx2d: CanvasRenderingContext2D): void {
-    fill(ctx2d, this.w, this.h, '#000');
-    centerText(ctx2d, 'PAUSED', this.w / 2, this.h / 2, 'bold 16px monospace', '#c9b070');
+  override update(): void {
+    const cmd = this.session.menus.update(readMenuInput(this.ctx.input));
+    if (!cmd) return;
+    if (cmd.type === 'resume') {
+      this.ctx.transition('playing');
+    } else if (cmd.type === 'endGame' || cmd.type === 'quit' || cmd.type === 'exitMenu') {
+      this.session.teardownLevel();
+      this.ctx.transition('title');
+    }
+  }
+  render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
+    this.session.renderWorld(alpha); // frozen world behind the menu
+    this.session.menus.draw(ctx2d, this.w, this.h);
   }
 }
 
 class IntermissionState extends BaseState {
   readonly id = 'intermission' as const;
+  override onEnter(ctx: GameContext): void {
+    super.onEnter(ctx);
+    this.session.beginIntermission();
+  }
   override update(): void {
-    if (this.ctx.input.wasPressed('use')) this.ctx.transition('playing');
+    this.session.intermission.update(FIXED_STEP);
+    if (readMenuInput(this.ctx.input).select) {
+      if (!this.session.intermission.skip()) {
+        const next = this.session.advanceAfterIntermission();
+        this.ctx.transition(next === 'victory' ? 'victory' : 'playing');
+      }
+    }
   }
   render(ctx2d: CanvasRenderingContext2D): void {
-    fill(ctx2d, this.w, this.h, '#06080c');
-    centerText(ctx2d, 'INTERMISSION', this.w / 2, this.h / 2, '12px monospace', '#c9b070');
+    this.session.intermission.draw(ctx2d, this.w, this.h);
   }
 }
 
 class GameoverState extends BaseState {
   readonly id = 'gameover' as const;
   override update(): void {
-    if (this.ctx.input.wasPressed('use')) this.ctx.transition('title');
+    if (this.ctx.input.wasPressed('use')) {
+      this.session.teardownLevel();
+      this.ctx.transition('title');
+    }
+  }
+  render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
+    this.session.renderWorld(alpha); // the death scene, frozen
+    drawGameOver(ctx2d, this.session.cache, this.w, this.h);
+  }
+}
+
+class VictoryState extends BaseState {
+  readonly id = 'victory' as const;
+  override update(): void {
+    if (this.ctx.input.wasPressed('use')) {
+      this.session.teardownLevel();
+      this.ctx.transition('title');
+    }
   }
   render(ctx2d: CanvasRenderingContext2D): void {
-    fill(ctx2d, this.w, this.h, '#000');
-    centerText(ctx2d, 'GAME OVER', this.w / 2, this.h / 2, 'bold 18px monospace', '#c0392b');
+    fill(ctx2d, this.w, this.h, '#08100a');
+    centerText(ctx2d, 'VICTORY', this.w / 2, this.h / 2 - 18, 'bold 22px monospace', '#c9b070');
+    centerText(ctx2d, 'Knee-Deep in the Dead — complete', this.w / 2, this.h / 2 + 6, '8px monospace', '#9c9');
+    centerText(ctx2d, '[E] Return to title', this.w / 2, this.h - 22, '7px monospace', '#888');
   }
 }
 
 class CreditsState extends BaseState {
   readonly id = 'credits' as const;
   override update(): void {
-    if (this.ctx.input.wasPressed('pause')) this.ctx.transition('title');
+    if (this.ctx.input.wasPressed('pause') || this.ctx.input.wasPressed('use')) {
+      this.ctx.transition('title');
+    }
   }
   render(ctx2d: CanvasRenderingContext2D): void {
     drawCredits(ctx2d, this.w, this.h);
   }
 }
 
-export function createStates(): Record<GameStateId, IGameState> {
+export function createStates(session: GameSession): Record<GameStateId, IGameState> {
   return {
-    boot: new BootState(),
-    loading: new LoadingState(),
-    title: new TitleState(),
-    menu: new MenuState(),
-    playing: new PlayingState(),
-    paused: new PausedState(),
-    intermission: new IntermissionState(),
-    gameover: new GameoverState(),
-    credits: new CreditsState(),
+    boot: new BootState(session),
+    loading: new LoadingState(session),
+    title: new TitleState(session),
+    menu: new MenuState(session),
+    playing: new PlayingState(session),
+    paused: new PausedState(session),
+    intermission: new IntermissionState(session),
+    gameover: new GameoverState(session),
+    victory: new VictoryState(session),
+    credits: new CreditsState(session),
   };
 }

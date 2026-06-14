@@ -21,6 +21,8 @@ export type GameEventMap = {
   'door:used': { x: number; y: number; locked: boolean };
   'secret:found': { sector: number };
   'level:exit': { secret: boolean };
+  /** Generic positioned sound request — world/AI emit it so audio stays decoupled. */
+  'sfx': { sound: string; x: number; y: number };
 };
 
 export type EventHandler<T> = (payload: T) => void;

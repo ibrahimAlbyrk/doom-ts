@@ -7,4 +7,8 @@ if (!(canvas instanceof HTMLCanvasElement)) {
   throw new Error('main: <canvas id="screen"> not found');
 }
 
-new Game(canvas).start();
+const game = new Game(canvas);
+game.start();
+
+// Expose a dev/automation handle (used by the in-browser playtest harness).
+(globalThis as unknown as { __doom?: unknown }).__doom = game.debug;

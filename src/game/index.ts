@@ -2,3 +2,5 @@
 export * from './game';
 export * from './states';
 export * from './context';
+export * from './session';
+export * from './scene';

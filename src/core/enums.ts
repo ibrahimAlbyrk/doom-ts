@@ -11,6 +11,7 @@ export type GameStateId =
   | 'paused'
   | 'intermission'
   | 'gameover'
+  | 'victory'
   | 'credits';
 
 /** Skill levels 1..5 (doom-design.md §7). */

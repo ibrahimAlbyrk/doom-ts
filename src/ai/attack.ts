@@ -29,6 +29,8 @@ export function attackThink(world: IWorld, m: Monster, rng: Rng, combat: CombatB
 
   if (m.stateTimer === 0) {
     m.angle = angleTo(m, target);
+    const attackSound = ENEMIES[m.type].sounds.attack;
+    if (attackSound) combat.emitGame('sfx', { sound: attackSound, x: m.x, y: m.y });
     performAttack(world, m, target, rng, combat);
   }
 

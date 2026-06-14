@@ -7,6 +7,7 @@
 // to the bus for infighting, rather than rolling pain/death itself.
 import type { IWorld, Monster, Rng, Faction, MonsterType } from '../core';
 import { REACTION_TICS, STOP_SPEED } from '../core';
+import { ENEMIES } from '../data';
 import { stepMovement } from '../world';
 import { CombatBus, isAliveMonster } from '../combat';
 import { lookForTarget, noiseAlert } from './sight';
@@ -48,12 +49,14 @@ function updateMonster(world: IWorld, m: Monster, rng: Rng, combat: CombatBus, t
         m.state = 'chase';
         m.stateTimer = 0;
         m.reactionTime = REACTION_TICS;
+        emitSightSound(m, rng, combat); // monster just woke and saw the player
       }
       return;
 
     case 'chase':
       integrateMomentum(world, m, tics);
       chaseThink(world, m, rng, tics);
+      if (rng.chance256(3)) emitActiveSound(m, combat); // occasional idle grunt (A_Chase)
       return;
 
     case 'melee':
@@ -61,6 +64,20 @@ function updateMonster(world: IWorld, m: Monster, rng: Rng, combat: CombatBus, t
       attackThink(world, m, rng, combat, tics);
       return;
   }
+}
+
+/** Play a random sight bark for `m` via the combat bus (forwarded to audio as 'sfx').
+ *  No-op when the type has no sight sound or when no game bus is attached (tests). */
+function emitSightSound(m: Monster, rng: Rng, combat: CombatBus): void {
+  const sights = ENEMIES[m.type].sounds.sight;
+  if (!sights || sights.length === 0) return;
+  combat.emitGame('sfx', { sound: sights[rng.int(sights.length)]!, x: m.x, y: m.y });
+}
+
+/** Play the active/idle grunt for `m` while it hunts. No-op if the type has none. */
+function emitActiveSound(m: Monster, combat: CombatBus): void {
+  const active = ENEMIES[m.type].sounds.active;
+  if (active) combat.emitGame('sfx', { sound: active, x: m.x, y: m.y });
 }
 
 /** Carry leftover momentum (e.g. combat knockback) and let friction settle it. */

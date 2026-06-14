@@ -15,10 +15,12 @@ import {
 import { DEFAULT_SKILL } from '../data';
 import { createServices } from './context';
 import { createStates } from './states';
+import { GameSession } from './session';
 
 export class Game {
   private readonly ctx2d: CanvasRenderingContext2D;
   private readonly context: GameContext;
+  private readonly session: GameSession;
   private readonly states: Record<GameStateId, IGameState>;
   private currentKey: GameStateId = 'boot';
 
@@ -56,7 +58,8 @@ export class Game {
       episodeLevel: 0,
     };
 
-    this.states = createStates();
+    this.session = new GameSession(this.context);
+    this.states = createStates(this.session);
     this.states[this.currentKey].onEnter(this.context);
     document.addEventListener('visibilitychange', this.onVisibility);
   }
@@ -85,6 +88,21 @@ export class Game {
     this.states[this.currentKey].onExit(this.context);
     this.currentKey = to;
     this.states[to].onEnter(this.context);
+  }
+
+  /** Dev/automation hook: inspect live state + drive the machine from the console. */
+  get debug(): {
+    state: () => GameStateId;
+    context: GameContext;
+    session: GameSession;
+    transition: (to: GameStateId) => void;
+  } {
+    return {
+      state: () => this.currentKey,
+      context: this.context,
+      session: this.session,
+      transition: (to) => this.transition(to),
+    };
   }
 
   private readonly loop = (nowMs: number): void => {
