@@ -29,7 +29,8 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
   });
 
   const invDet = 1 / (cam.planeX * cam.dirY - cam.dirX * cam.planeY);
-  const eyeAboveFloor = f.eyeAboveFloor; // bobbed eye height → sprites bob with the floor
+  const eyeZ = f.eyeZ; // absolute bobbed eye height (cell units) — shared with the world cast
+  const level = f.level; // per-cell floor heights, same source the raycaster uses
   const half = H / 2;
 
   for (let s = 0; s < n; s++) {
@@ -50,9 +51,13 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
     const spriteW = (SPRW / TEXELS_PER_CELL) * scale;
     const spriteH = (SPRH / TEXELS_PER_CELL) * scale;
 
-    // Stand the sprite on the floor line at its depth (matches the flat cast), then
-    // apply vMove for floating things (engine.md §4.2).
-    const floorLine = half + eyeAboveFloor * scale;
+    // Stand the sprite on ITS OWN cell's floor tier, not the player's: use the same
+    // screenY(z) = half + (eyeZ - z)*scale the wall/flat cast uses (raycaster.ts), with
+    // z = the sprite cell's floor height. So a thing on a raised ledge draws higher and
+    // stays planted on its floor as the player rides a lift or steps up/down. Then apply
+    // vMove for floating things on top (engine.md §4.2).
+    const spriteFloorZ = level.floorHeightAt(Math.floor(sprite.x), Math.floor(sprite.y)) / CELL_SIZE;
+    const floorLine = half + (eyeZ - spriteFloorZ) * scale;
     const vMove = sprite.vMove / transformY;
     const drawBottom = floorLine + vMove;
     const drawTop = drawBottom - spriteH;
