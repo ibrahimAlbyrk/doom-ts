@@ -91,15 +91,42 @@ export function drawSprites(f: Frame, sprites: SpriteInstance[], order: number[]
   }
 }
 
+// A native-pixel weapon blit shrinks to a tiny fraction of the backbuffer at higher
+// internal resolutions, so scale the view-model by H / PSPR_VIEW_HEIGHT. The divisor is
+// tuned (not the literal 200-tall pspr space) so the gun is noticeably bigger than the
+// native blit yet its TOP stays just below the screen center / aim point — the upper
+// half stays clear so the player can see enemies. Scaling with H keeps that framing at
+// every tier (960×540 → 1.65×, 480×270 → 0.82×, 320×200 → 0.55×).
+const PSPR_VIEW_HEIGHT = 326;
+function weaponScale(H: number): number {
+  return H / PSPR_VIEW_HEIGHT;
+}
+
 /**
  * Screen top-left for a bottom-center-anchored view-model frame, plus the bob offset.
  * `anchorBottom` is the play-view bottom (above the status bar), not the screen height.
+ * `scale` magnifies the frame; the anchor uses the SCALED size so the gun stays
+ * bottom-center and the (200-view-space) bob travel is magnified to match.
  */
-function weaponAnchor(W: number, anchorBottom: number, fw: number, fh: number, bobX: number, bobY: number) {
-  return { ox: (((W - fw) / 2 + bobX) | 0), oy: ((anchorBottom - fh + bobY) | 0) };
+function weaponAnchor(
+  W: number,
+  anchorBottom: number,
+  fw: number,
+  fh: number,
+  bobX: number,
+  bobY: number,
+  scale: number,
+) {
+  const dw = fw * scale;
+  const dh = fh * scale;
+  return { ox: (((W - dw) / 2 + bobX * scale) | 0), oy: ((anchorBottom - dh + bobY * scale) | 0) };
 }
 
-/** Alpha-test blit of a view-model frame at (ox,oy), shaded by `fLight`. */
+/**
+ * Alpha-test blit of a view-model frame at (ox,oy), shaded by `fLight`, magnified by
+ * `scale` with nearest-neighbor sampling (integer-step the source texel per dest pixel),
+ * preserving the 1-bit alpha-test transparency.
+ */
 function blitViewFrame(
   back: Uint32Array,
   W: number,
@@ -108,18 +135,25 @@ function blitViewFrame(
   ox: number,
   oy: number,
   fLight: number,
+  scale: number,
 ): void {
   const tex = frame.texture;
   const fw = tex.width;
   const fh = tex.height;
   const px = tex.pixels;
-  for (let y = 0; y < fh; y++) {
-    const sy = oy + y;
+  const dw = (fw * scale) | 0;
+  const dh = (fh * scale) | 0;
+  const invScale = 1 / scale;
+  for (let dy = 0; dy < dh; dy++) {
+    const sy = oy + dy;
     if (sy < 0 || sy >= H) continue;
-    for (let x = 0; x < fw; x++) {
-      const sx = ox + x;
+    const ty = (dy * invScale) | 0;
+    const row = ty * fw;
+    for (let dx = 0; dx < dw; dx++) {
+      const sx = ox + dx;
       if (sx < 0 || sx >= W) continue;
-      const color = px[y * fw + x]!;
+      const tx = (dx * invScale) | 0;
+      const color = px[row + tx]!;
       if ((color >>> 24) === 0) continue;
       back[sy * W + sx] = shade(color, fLight);
     }
@@ -144,9 +178,10 @@ export function drawWeapon(
   bobX: number,
   bobY: number,
 ): void {
-  const { ox, oy } = weaponAnchor(W, anchorBottom, frame.texture.width, frame.texture.height, bobX, bobY);
+  const scale = weaponScale(H);
+  const { ox, oy } = weaponAnchor(W, anchorBottom, frame.texture.width, frame.texture.height, bobX, bobY, scale);
   const fLight = brightness[lightLevel(0, sectorLight, extralight, levels)]!;
-  blitViewFrame(back, W, H, frame, ox, oy, fLight);
+  blitViewFrame(back, W, H, frame, ox, oy, fLight, scale);
 }
 
 /**
@@ -165,10 +200,11 @@ export function drawViewFlash(
   bobX: number,
   bobY: number,
 ): void {
-  const base = weaponAnchor(W, anchorBottom, weapon.texture.width, weapon.texture.height, bobX, bobY);
-  const ox = base.ox + ((weapon.originX - flash.originX) | 0);
-  const oy = base.oy + ((weapon.originY - flash.originY) | 0);
-  blitViewFrame(back, W, H, flash, ox, oy, 1); // full-bright: muzzle flash ignores sector light
+  const scale = weaponScale(H);
+  const base = weaponAnchor(W, anchorBottom, weapon.texture.width, weapon.texture.height, bobX, bobY, scale);
+  const ox = base.ox + (((weapon.originX - flash.originX) * scale) | 0);
+  const oy = base.oy + (((weapon.originY - flash.originY) * scale) | 0);
+  blitViewFrame(back, W, H, flash, ox, oy, 1, scale); // full-bright: muzzle flash ignores sector light
 }
 
 /** Sector light at the camera cell — used to light the weapon overlay. */
