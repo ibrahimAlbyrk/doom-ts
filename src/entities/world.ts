@@ -1,6 +1,6 @@
 // World — the entity registry (struct-of-entities, web-arch.md §4 option A).
 // Plain typed arrays with O(1) swap-pop removal. Implements the IWorld contract.
-import type { IWorld, Player, Monster, Projectile, Pickup, ILevelRuntime } from '../core';
+import type { IWorld, Player, Monster, Projectile, Pickup, ILevelRuntime, SkillId } from '../core';
 import { createPlayer } from './factory';
 
 export class World implements IWorld {
@@ -9,6 +9,7 @@ export class World implements IWorld {
   projectiles: Projectile[] = [];
   pickups: Pickup[] = [];
   level: ILevelRuntime | null = null;
+  skill: SkillId = 3; // HMP baseline; loadLevel overwrites with the chosen skill per session
 
   private nextId = 1;
 

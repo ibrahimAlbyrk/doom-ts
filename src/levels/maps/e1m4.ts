@@ -130,13 +130,13 @@ export const E1M4 = compile({
     { id: 2018, x: 5, y: 8 }, // green armor (base)
     { id: 2019, x: 37, y: 31 }, // blue armor (secret)
     // Monsters — ~47 on HMP (33 easy / 57 UV). Imp/demon mass + cacodemon lava swarm.
-    { id: 3004, x: 5, y: 6, angle: 90 }, // zombieman
+    { id: 3004, x: 12, y: 4, angle: 180 }, // zombieman (pulled back from start to ≥8c)
     { id: 3004, x: 20, y: 4, angle: 90 }, // zombieman
     { id: 3004, x: 33, y: 9, angle: 180 }, // zombieman
-    { id: 9, x: 10, y: 7, angle: 0 }, // shotgun guy
+    { id: 9, x: 17, y: 5, angle: 180 }, // shotgun guy (blue spoke, behind the door — no hitscan at spawn)
     { id: 9, x: 24, y: 8, angle: 180 }, // shotgun guy
     { id: 9, x: 36, y: 18, angle: 180 }, // shotgun guy
-    { id: 9, x: 8, y: 16, angle: 0 }, // shotgun guy
+    { id: 9, x: 8, y: 16, angle: 0, skill: 6 }, // shotgun guy — normal+hard (easy shotgunGuy cap ≤3)
     { id: 3001, x: 4, y: 9, angle: 0 }, // imp
     { id: 3001, x: 22, y: 6, angle: 90 }, // imp
     { id: 3001, x: 31, y: 8, angle: 180 }, // imp
@@ -153,7 +153,7 @@ export const E1M4 = compile({
     { id: 3002, x: 26, y: 31, angle: 180 }, // demon
     { id: 58, x: 16, y: 31, angle: 90 }, // spectre (lava)
     { id: 58, x: 22, y: 31, angle: 90 }, // spectre (lava)
-    { id: 58, x: 9, y: 26, angle: 0 }, // spectre
+    { id: 58, x: 9, y: 26, angle: 0, skill: 4 }, // spectre — hard only (thin the easy lava cavern)
     { id: 58, x: 29, y: 26, angle: 180 }, // spectre
     { id: 3006, x: 24, y: 16, angle: 180 }, // lost soul
     { id: 3006, x: 18, y: 14, angle: 90 }, // lost soul
@@ -162,18 +162,18 @@ export const E1M4 = compile({
     { id: 3006, x: 27, y: 25, angle: 180 }, // lost soul
     { id: 3005, x: 12, y: 26, angle: 0 }, // cacodemon (lava swarm)
     { id: 3005, x: 20, y: 31, angle: 90 }, // cacodemon (lava swarm)
-    { id: 3005, x: 24, y: 26, angle: 180 }, // cacodemon (lava swarm)
+    { id: 3005, x: 24, y: 26, angle: 180, skill: 6 }, // cacodemon (lava swarm) — normal+hard (easy caco ≤2)
     // higher-skill extras (6 = normal+hard, 4 = hard-only)
     { id: 3004, x: 24, y: 4, angle: 90, skill: 6 }, // zombieman
     { id: 9, x: 33, y: 18, angle: 180, skill: 6 }, // shotgun guy
-    { id: 9, x: 6, y: 7, angle: 0, skill: 6 }, // shotgun guy
+    { id: 9, x: 16, y: 9, angle: 180, skill: 6 }, // shotgun guy (blue spoke, behind the door)
     { id: 3001, x: 5, y: 16, angle: 0, skill: 6 }, // imp
     { id: 3001, x: 32, y: 11, angle: 180, skill: 6 }, // imp
     { id: 3001, x: 8, y: 28, angle: 0, skill: 6 }, // imp
     { id: 3001, x: 28, y: 28, angle: 180, skill: 6 }, // imp
     { id: 3001, x: 20, y: 25, angle: 90, skill: 6 }, // imp
     { id: 3002, x: 16, y: 30, angle: 90, skill: 6 }, // demon
-    { id: 58, x: 20, y: 25, angle: 90, skill: 6 }, // spectre
+    { id: 58, x: 24, y: 25, angle: 90, skill: 6 }, // spectre (un-stacked from the imp at 20,25)
     { id: 3006, x: 24, y: 14, angle: 180, skill: 6 }, // lost soul
     { id: 3006, x: 34, y: 11, angle: 180, skill: 6 }, // lost soul
     { id: 3006, x: 13, y: 30, angle: 0, skill: 6 }, // lost soul
