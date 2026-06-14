@@ -14,6 +14,7 @@ export const E1M1 = compile({
   name: 'Landing Bay',
   par: 60,
   sky: 'SKY1',
+  music: 'D_E1M1',
   base: { floor: 'FLOOR4_8', ceil: 'CEIL1_1', floorH: 0, ceilH: 160, light: 192 },
   legend: {
     '#': { wall: 'STARTAN3' },

@@ -119,6 +119,7 @@ export function buildRenderScene(
   }
 
   const viewWeapon = view.sprite ? (assets.getSprite(view.sprite, view.frame, 0) ?? null) : null;
+  const viewFlash = view.flashSprite ? (assets.getSprite(view.flashSprite, view.flashFrame, 0) ?? null) : null;
 
   return {
     camera: {
@@ -132,6 +133,7 @@ export function buildRenderScene(
     level,
     sprites,
     viewWeapon,
+    viewFlash,
     extralight: view.extralight,
     bobX: view.bobX,
     bobY: view.bobY,

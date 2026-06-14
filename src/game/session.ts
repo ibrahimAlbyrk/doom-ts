@@ -5,7 +5,7 @@
 //
 // Per-level systems are rebuilt on every startLevel and torn down first, so combat
 // subscriptions never leak between maps. Shared services live on the GameContext.
-import type { GameContext, SkillId, MapData, Action } from '../core';
+import type { GameContext, SkillId, MapData, Action, ScreenTint, PowerupKind } from '../core';
 import {
   CELL_SIZE,
   FIXED_STEP,
@@ -33,7 +33,7 @@ import { WeaponSystem } from '../weapons';
 import { createMonsterAI, type MonsterAI } from '../ai';
 import { updateItems } from '../items';
 import { GameSoundEvents, type AudioManager } from '../audio';
-import { TextureCache, HudController, Intermission, Menus, type LevelTally } from '../ui';
+import { TextureCache, HudController, Intermission, Menus, drawAutomap, type LevelTally } from '../ui';
 import { ITEMS_BY_ID } from '../data';
 import { buildRenderScene } from './scene';
 
@@ -78,6 +78,10 @@ export class GameSession {
 
   private currentMapId = '';
   private pendingNextId: string | null = null;
+  private automapOn = false;
+  /** Decaying 0..1 tint strengths: red on taking damage, gold on a pickup. */
+  private damageFlash = 0;
+  private bonusFlash = 0;
   private animTic = 0;
   private levelTimeTics = 0;
   private kills = 0;
@@ -95,6 +99,7 @@ export class GameSession {
     this.menus = new Menus(this.cache, {
       config: ctx.config,
       getBindings: () => ctx.input.getBindings(),
+      setBinding: (action, code) => ctx.input.setBinding(action, code),
       audio: ctx.audio,
       onResolutionChange: () => ctx.renderer.resize(ctx.config),
     });
@@ -102,8 +107,17 @@ export class GameSession {
     // Persistent counters + the fire→noise hookup. These live for the whole app;
     // counters are zeroed per level and `this.ai` is whatever the current level built.
     ctx.events.on('monster:died', () => this.kills++);
-    ctx.events.on('pickup:collected', () => this.items++);
+    ctx.events.on('pickup:collected', () => {
+      this.items++;
+      this.bonusFlash = Math.min(0.45, this.bonusFlash + 0.22);
+    });
     ctx.events.on('secret:found', () => this.secrets++);
+    // Damage red-flash: bump a decaying counter on each hit (doom-design §5 tint).
+    // Capped to the renderer-fx reference strength (~0.5) so it never fully occludes
+    // the view, even stacked over the HUD's own brief damage flash.
+    ctx.events.on('player:damaged', (e) => {
+      this.damageFlash = Math.min(0.55, this.damageFlash + 0.18 + e.amount / 60);
+    });
     ctx.events.on('weapon:fired', () => {
       const p = this.ctx.world.player;
       this.ai?.noise(p.x, p.y);
@@ -146,7 +160,13 @@ export class GameSession {
     this.secrets = 0;
     this.levelTimeTics = 0;
     this.animTic = 0;
+    this.damageFlash = 0;
+    this.bonusFlash = 0;
     this.hud.setMessage(data.name);
+
+    // Per-level music: switch tracks on each load (no-op for unknown ids). The
+    // AudioContext is resumed on the menu's start gesture, so playback starts here.
+    if (data.music) this.audio.playMusic(data.music);
   }
 
   teardownLevel(): void {
@@ -154,6 +174,7 @@ export class GameSession {
     this.weapons?.dispose();
     this.gse?.unbindAll();
     this.audio.stopAllSfx();
+    this.audio.stopMusic();
     this.ai = null;
     this.weapons = null;
     this.gse = null;
@@ -174,6 +195,9 @@ export class GameSession {
     for (let n = 1; n <= 7; n++) {
       if (input.wasPressed(`weapon${n}` as Action)) weaponSlot = n;
     }
+
+    // Automap toggle (edge): read once per frame, here in the per-frame command read.
+    if (input.wasPressed('automap')) this.automapOn = !this.automapOn;
 
     if (input.pointerLocked && input.mouseDX !== 0) {
       const sens = this.menus.getSensitivity();
@@ -240,6 +264,8 @@ export class GameSession {
     this.hud.update(FIXED_STEP);
     this.levelTimeTics += T;
     this.animTic += T;
+    this.damageFlash = Math.max(0, this.damageFlash - 0.025 * T);
+    this.bonusFlash = Math.max(0, this.bonusFlash - 0.02 * T);
 
     // 9) death + level exit.
     if (p.health <= 0) return 'dead';
@@ -298,15 +324,43 @@ export class GameSession {
 
   // ── rendering ────────────────────────────────────────────────────────────────
 
-  renderWorld(alpha: number): void {
+  renderWorld(ctx2d: CanvasRenderingContext2D, alpha: number): void {
     const level = this.level;
     const weapons = this.weapons;
     if (!level || !weapons) return;
     const { world, renderer, assets, config } = this.ctx;
     this.audio.setListener(world.player.x, world.player.y, world.player.angle);
     const scene = buildRenderScene(world, level, assets, weapons.getView(), this.animTic, config.fovRatio);
+    scene.tint = this.computeTint();
     renderer.render(scene, alpha);
+    // Automap overlay sits over the world but under the HUD bar (classic DOOM look).
+    if (this.automapOn) {
+      drawAutomap(ctx2d, world, world.player, config.internalWidth, config.internalHeight, {
+        monsters: world.monsters,
+      });
+    }
     this.hud.composite(renderer, world);
+  }
+
+  /**
+   * Derive the full-screen palette tint from player state (doom-design §5, the
+   * renderer-fx mapping). One tint slot, so by priority: invulnerability invert →
+   * decaying damage red → decaying pickup gold → light-amp bright → radiation green →
+   * berserk red. Returns undefined when nothing is active.
+   */
+  private computeTint(): ScreenTint | undefined {
+    const pw = this.ctx.world.player.powerups;
+    const active = (k: PowerupKind): boolean => {
+      const v = pw[k];
+      return v !== undefined && v !== 0;
+    };
+    if (active('invulnerability')) return { r: 255, g: 255, b: 255, a: 0.15, mode: 'invert' };
+    if (this.damageFlash > 0) return { r: 255, g: 0, b: 0, a: Math.min(0.55, this.damageFlash) };
+    if (this.bonusFlash > 0) return { r: 215, g: 186, b: 69, a: Math.min(0.45, this.bonusFlash) };
+    if (active('lightVisor')) return { r: 255, g: 255, b: 210, a: 0.25, mode: 'bright' };
+    if (active('radSuit')) return { r: 0, g: 255, b: 0, a: 0.18 };
+    if (active('berserk')) return { r: 255, g: 0, b: 0, a: 0.1 };
+    return undefined;
   }
 
   // ── episode / intermission flow ──────────────────────────────────────────────

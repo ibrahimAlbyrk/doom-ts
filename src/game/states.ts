@@ -183,8 +183,8 @@ class PlayingState extends BaseState {
     }
   }
 
-  render(_ctx2d: CanvasRenderingContext2D, alpha: number): void {
-    this.session.renderWorld(alpha);
+  render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
+    this.session.renderWorld(ctx2d, alpha);
     this.cmd = null; // frame boundary: rebuild the command next frame
   }
 }
@@ -206,7 +206,7 @@ class PausedState extends BaseState {
     }
   }
   render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
-    this.session.renderWorld(alpha); // frozen world behind the menu
+    this.session.renderWorld(ctx2d, alpha); // frozen world behind the menu
     this.session.menus.draw(ctx2d, this.w, this.h);
   }
 }
@@ -240,7 +240,7 @@ class GameoverState extends BaseState {
     }
   }
   render(ctx2d: CanvasRenderingContext2D, alpha: number): void {
-    this.session.renderWorld(alpha); // the death scene, frozen
+    this.session.renderWorld(ctx2d, alpha); // the death scene, frozen
     drawGameOver(ctx2d, this.session.cache, this.w, this.h);
   }
 }
