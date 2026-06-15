@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Optional SSH key (DEPLOY_SSH_KEY=/path/to/key). Needed when the box uses key-only auth and the
-# key isn't your default identity — e.g. this server: DEPLOY_SSH_KEY=~/Downloads/zap-hosting.pri
+# key isn't your default identity — e.g. this server: DEPLOY_SSH_KEY=/path/to/your-deploy-key
 SSH_OPTS=()
 [ -n "${DEPLOY_SSH_KEY:-}" ] && SSH_OPTS=(-i "${DEPLOY_SSH_KEY}" -o IdentitiesOnly=yes)
 SSH_OPTS+=(-o StrictHostKeyChecking=accept-new)
