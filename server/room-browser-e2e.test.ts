@@ -55,15 +55,22 @@ function cmd(seq = 0): TicCommand {
 
 async function main(): Promise<void> {
   console.log('Room browser end-to-end over the real Colyseus wire (2 clients, no codes/addresses)');
+  // MP_URL drives an already-running deployment over the real public wire (e.g.
+  // wss://host); without it we boot a throwaway local server. listRooms() maps ws→http /
+  // wss→https for the GET /rooms discovery call.
+  const remoteUrl = process.env.MP_URL;
   const PORT = 2603;
-  const url = `ws://localhost:${PORT}`;
-  // Same wiring as server/index.ts: own the http server so GET /rooms rides the ws port.
-  const httpServer = http.createServer();
-  attachRoomsRoute(httpServer);
-  const gameServer = new Server({ transport: new WebSocketTransport({ server: httpServer }) });
-  gameServer.define('match', MatchRoom);
-  await gameServer.listen(PORT);
-  console.log(`  server listening on ${url}`);
+  const url = remoteUrl ?? `ws://localhost:${PORT}`;
+  let gameServer: Server | undefined;
+  if (!remoteUrl) {
+    // Same wiring as server/index.ts: own the http server so GET /rooms rides the ws port.
+    const httpServer = http.createServer();
+    attachRoomsRoute(httpServer);
+    gameServer = new Server({ transport: new WebSocketTransport({ server: httpServer }) });
+    gameServer.define('match', MatchRoom);
+    await gameServer.listen(PORT);
+  }
+  console.log(`  ${remoteUrl ? 'driving remote server at' : 'server listening on'} ${url}`);
 
   try {
     // ── A HOSTS a co-op room (no code is shared anywhere) ───────────────────────────────────
@@ -127,7 +134,7 @@ async function main(): Promise<void> {
     bRemote.teardownLevel();
     await sleep(50);
   } finally {
-    await gameServer.gracefullyShutdown(false);
+    if (gameServer) await gameServer.gracefullyShutdown(false);
   }
 
   console.log(`\nAll ${passed} room-browser end-to-end assertions passed.`);
