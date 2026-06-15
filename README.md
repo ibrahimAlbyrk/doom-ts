@@ -4,7 +4,7 @@ A from-scratch, DOOM-style raycaster FPS built in **TypeScript** — single-play
 online multiplayer, running entirely in the browser. No engine, no WAD interpreter: a
 hand-written Canvas 2D renderer, game sim, and lag-compensated netcode.
 
-**▶ Live demo: https://185.249.197.74.sslip.io/**
+**▶ Live demo: https://playmore.world/#game/f42c8174-7d4a-4657-91da-e789743c806e**
 
 ![E1M1 gameplay](docs/screenshots/02-e1m1.png)
 
