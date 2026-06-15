@@ -12,6 +12,7 @@
 // Master / SFX / Music gain and a master mute persist to localStorage so settings
 // survive reloads.
 import type { Audio } from '../core';
+import { EMBEDDED_ASSETS } from '../assets/embedded';
 import { VoicePool } from './sfx-pool';
 
 /** Extra knobs for the ergonomic `play()` entry point. */
@@ -38,7 +39,8 @@ const STORE_KEYS = {
 
 // Per-level music lives outside the frozen AssetManifest (which types music as OGG-only):
 // the extractor writes WAV tracks + this index, which AudioManager loads on demand.
-const MUSIC_ASSETS_BASE = '/assets/';
+// Path is relative so the build runs from any subdirectory.
+const MUSIC_ASSETS_BASE = './assets/';
 const MUSIC_INDEX_PATH = 'audio/music/index.json';
 
 interface MusicIndexEntry {
@@ -217,6 +219,12 @@ export class AudioManager implements Audio {
     if (this.musicIndex) return Promise.resolve();
     if (!this.musicIndexLoad) {
       this.musicIndexLoad = (async () => {
+        // The self-contained itch build embeds no music (uncompressed WAV would dwarf
+        // the bundle); skip the fetch so an opaque-origin sandbox logs no CORS errors.
+        if (EMBEDDED_ASSETS) {
+          this.musicIndex = {};
+          return;
+        }
         try {
           const res = await fetch(MUSIC_ASSETS_BASE + MUSIC_INDEX_PATH);
           this.musicIndex = res.ok ? ((await res.json()) as MusicIndex).tracks ?? {} : {};

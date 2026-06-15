@@ -2,13 +2,20 @@
 // packed-ABGR Texture buffers, registers sprite frames + UI/font/flat images, and
 // loads SFX through the Audio service — reporting progress for the LOADING state.
 //
-// Path model: the manifest lives at `/manifest.json`; its asset `path`s are
-// relative to the assets base (`/assets/`). The PLAYPAL[0] palette is emitted by
-// the extractor as `<assetsBase>palette.json` (256 [r,g,b] triples) and loaded into
-// the store as packed 0xAABBGGRR for the renderer's colormap.
+// Path model: the manifest lives at `./manifest.json`; its asset `path`s are
+// relative to the assets base (`./assets/`). Paths are RELATIVE so the build runs
+// from any subdirectory. The PLAYPAL[0] palette is emitted by the extractor as
+// `<assetsBase>palette.json` (256 [r,g,b] triples) and loaded into the store as
+// packed 0xAABBGGRR for the renderer's colormap.
+//
+// Self-contained itch build: when `EMBEDDED_ASSETS` is present (build:itch), the
+// manifest + palette come from the embedded payload and every asset URL is a `data:`
+// URL instead of an http path — so the existing fetch→decode paths run unchanged but
+// touch no network, which is what an opaque-origin sandbox needs (see ./embedded.ts).
 import type { Audio, Texture, MapData } from '../core';
 import type { AssetStore } from './asset-store';
 import type { AssetManifest } from './manifest';
+import { EMBEDDED_ASSETS } from './embedded';
 
 export interface LoadProgress {
   loaded: number;
@@ -17,8 +24,8 @@ export interface LoadProgress {
 
 export type ProgressCallback = (p: LoadProgress) => void;
 
-const DEFAULT_MANIFEST_URL = '/manifest.json';
-const DEFAULT_ASSETS_BASE = '/assets/';
+const DEFAULT_MANIFEST_URL = './manifest.json';
+const DEFAULT_ASSETS_BASE = './assets/';
 const DECODE_CONCURRENCY = 8;
 
 export class AssetLoader {
@@ -40,17 +47,17 @@ export class AssetLoader {
     tasks.push(() => this.loadPalette());
 
     for (const [id, e] of Object.entries(manifest.textures)) {
-      tasks.push(() => this.loadTexture(id, this.assetsBase + e.path));
+      tasks.push(() => this.loadTexture(id, this.imageUrl(e.path)));
     }
     for (const [id, e] of Object.entries(manifest.flats)) {
-      tasks.push(() => this.loadTexture(id, this.assetsBase + e.path));
+      tasks.push(() => this.loadTexture(id, this.imageUrl(e.path)));
     }
     for (const [id, e] of Object.entries(manifest.ui)) {
-      tasks.push(() => this.loadTexture(id, this.assetsBase + e.path));
+      tasks.push(() => this.loadTexture(id, this.imageUrl(e.path)));
     }
     for (const [fontKey, font] of Object.entries(manifest.fonts)) {
       for (const [code, glyph] of Object.entries(font.glyphs)) {
-        tasks.push(() => this.loadTexture(`${fontKey}#${code}`, this.assetsBase + glyph.path));
+        tasks.push(() => this.loadTexture(`${fontKey}#${code}`, this.imageUrl(glyph.path)));
       }
     }
 
@@ -59,7 +66,7 @@ export class AssetLoader {
     for (const task of this.spriteTasks(manifest)) tasks.push(task);
 
     for (const [id, sound] of Object.entries(manifest.sounds)) {
-      tasks.push(() => this.audio.load(id, this.assetsBase + sound.path));
+      tasks.push(() => this.audio.load(id, this.soundUrl(sound.path)));
     }
 
     let loaded = 0;
@@ -71,11 +78,21 @@ export class AssetLoader {
     });
   }
 
-  /** Fetch and parse the manifest JSON. */
+  /** Fetch and parse the manifest JSON (or read it from the embedded payload). */
   async loadManifest(url: string = this.manifestUrl): Promise<AssetManifest> {
+    if (EMBEDDED_ASSETS) return EMBEDDED_ASSETS.manifest;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`AssetLoader: manifest fetch ${url} → ${res.status}`);
     return (await res.json()) as AssetManifest;
+  }
+
+  // ── URL resolution: embedded `data:` URL (build:itch) or http path (default) ──
+  private imageUrl(path: string): string {
+    return EMBEDDED_ASSETS ? EMBEDDED_ASSETS.images[path]! : this.assetsBase + path;
+  }
+
+  private soundUrl(path: string): string {
+    return EMBEDDED_ASSETS ? EMBEDDED_ASSETS.sounds[path]! : this.assetsBase + path;
   }
 
   /** Decode a PNG into a packed-Uint32 Texture and register it under `id`. */
@@ -107,7 +124,7 @@ export class AssetLoader {
       }
     }
     return [...byPath.entries()].map(([path, refs]) => async () => {
-      const texture = await this.decodeImage(this.assetsBase + path);
+      const texture = await this.decodeImage(this.imageUrl(path));
       for (const r of refs) {
         this.store.addSprite(r.key, { texture, originX: r.originX, originY: r.originY, mirror: r.mirror });
       }
@@ -115,10 +132,15 @@ export class AssetLoader {
   }
 
   private async loadPalette(): Promise<void> {
-    const url = this.assetsBase + 'palette.json';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`AssetLoader: palette fetch ${url} → ${res.status}`);
-    const triples = (await res.json()) as Array<[number, number, number]>;
+    let triples: Array<[number, number, number]>;
+    if (EMBEDDED_ASSETS) {
+      triples = EMBEDDED_ASSETS.palette;
+    } else {
+      const url = this.assetsBase + 'palette.json';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`AssetLoader: palette fetch ${url} → ${res.status}`);
+      triples = (await res.json()) as Array<[number, number, number]>;
+    }
     const pal = new Uint32Array(triples.length);
     for (let i = 0; i < triples.length; i++) {
       const t = triples[i]!;

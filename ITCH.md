@@ -9,17 +9,22 @@ to the VPS automatically.
 ```sh
 npm install            # first time only
 npm run extract-assets # first time only — extracts Freedoom into public/assets
-npm run build:itch     # builds dist/ with the VPS server URL baked in
+npm run build:itch     # self-contained dist/index.html + doom-itch.zip (VPS URL baked in)
 ```
 
-`build:itch` runs `VITE_MP_SERVER_URL=wss://185.249.197.74.sslip.io vite build`.
-The result is in `dist/` with `index.html` at the root.
+`build:itch` bakes `VITE_MP_SERVER_URL=wss://185.249.197.74.sslip.io`, **embeds every
+asset as a `data:` URL and inlines the JS** into a single self-contained
+`dist/index.html`, then zips it to `doom-itch.zip` (index.html at the zip root).
 
-Zip the **contents** of `dist/` (so `index.html` is at the zip root, not nested):
+Why self-contained: itch.io serves HTML games in a `sandbox="allow-scripts"` iframe, so
+the document origin is **"null"**. From an opaque origin every `fetch()` (and even the
+module-script load) is cross-origin and needs CORS headers the static host does not send
+— so a normal build is blocked. The itch build performs **zero network asset fetches**
+(everything is inlined), so it loads from the sandbox with no CORS dependency. The
+multiplayer WebSocket is unaffected (WebSockets are not CORS-preflighted).
 
-```sh
-cd dist && zip -rq ../doom-itch.zip . && cd ..
-```
+Nothing else to do — `doom-itch.zip` is ready to upload. (To re-zip an existing `dist/`
+without rebuilding: `npm run zip:itch`.)
 
 ## 2. Upload to itch.io
 
@@ -43,4 +48,11 @@ offline with no server.
 ## Caveat — server URL is baked at build time
 
 The VPS address is compiled into the build. If the server address ever changes,
-re-run `npm run build:itch`, re-zip `dist/`, and re-upload the new zip to itch.io.
+re-run `npm run build:itch` (it re-zips automatically) and re-upload the new zip.
+
+## Caveat — no music in the itch build
+
+The embedded build ships textures, sprites, UI/fonts and **sound effects**, but **not the
+per-level music** (the extractor emits ~38 MB of uncompressed-WAV tracks; inlining them
+would roughly quadruple the bundle). Music is silently skipped in this build — no fetch,
+no error. The default same-origin build still streams music normally.
