@@ -13,6 +13,7 @@
 // survive reloads.
 import type { Audio } from '../core';
 import { EMBEDDED_ASSETS } from '../assets/embedded';
+import { isDataUrl, parseDataUrl } from '../assets/data-url';
 import { VoicePool } from './sfx-pool';
 
 /** Extra knobs for the ergonomic `play()` entry point. */
@@ -107,11 +108,19 @@ export class AudioManager implements Audio {
     await this.ensure().resume();
   }
 
-  /** Fetch + decode a buffer under `id` (used by the boot AssetLoader). */
+  /** Decode a buffer under `id` (used by the boot AssetLoader). */
   async load(id: string, url: string): Promise<void> {
     const ctx = this.ensure();
-    const raw = await (await fetch(url)).arrayBuffer();
+    const raw = await this.audioBytes(url);
     this.buffers.set(id, await ctx.decodeAudioData(raw));
+  }
+
+  /** Audio bytes as an ArrayBuffer for decodeAudioData: an inlined `data:` URL is decoded
+   *  via atob (no fetch — the host CSP's connect-src does not cover the `data:` scheme); a
+   *  real path is fetched (default build, unchanged). */
+  private async audioBytes(url: string): Promise<ArrayBuffer> {
+    if (isDataUrl(url)) return parseDataUrl(url).bytes.buffer;
+    return (await fetch(url)).arrayBuffer();
   }
 
   // ── SFX (frozen contract) ────────────────────────────────────────────────────
@@ -207,9 +216,10 @@ export class AudioManager implements Audio {
       await this.ensureMusicIndex();
       const entry = this.musicIndex?.[id];
       if (!entry || this.pendingMusicId !== id) return; // unknown id / superseded
-      // itch build: entry.url is an inlined data: URL (CORS-exempt); same-origin build
-      // resolves the track path against the assets base. Both decode + loop identically.
-      const raw = await (await fetch(entry.url ?? MUSIC_ASSETS_BASE + entry.path)).arrayBuffer();
+      // itch build: entry.url is an inlined data: URL — decoded via atob (no fetch, so the
+      // host CSP's connect-src never applies); same-origin build fetches the track path.
+      // Both decode + loop identically.
+      const raw = await this.audioBytes(entry.url ?? MUSIC_ASSETS_BASE + entry.path);
       const buf = await ctx.decodeAudioData(raw);
       this.buffers.set(id, buf);
       this.startMusicSource(id, buf, loop);

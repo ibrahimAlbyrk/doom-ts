@@ -1,13 +1,15 @@
 // Embedded-asset bridge for the self-contained itch.io build (`npm run build:itch`).
 //
 // The default (same-origin / VPS) build fetches manifest.json + assets at runtime.
-// That breaks inside an opaque-origin sandbox (itch.io serves the game in a
-// `sandbox="allow-scripts"` iframe → document origin "null"): every fetch() is then
-// cross-origin and the static host sends no CORS headers, so the loads are blocked.
-// build:itch instead inlines the manifest + binary assets as `data:` URLs (which are
-// CORS-exempt) via the embed-assets Vite plugin, which fills the
-// `virtual:doom-embedded-assets` module. In the default build that module is `null`,
-// so this whole graph tree-shakes away and the same-origin build stays lean.
+// That breaks when the game is embedded in a `sandbox="allow-scripts"` iframe (document
+// origin "null") on a host that serves it under a Content-Security-Policy: the static
+// host sends no CORS headers AND a CSP such as `connect-src *` does not cover the `data:`
+// scheme — so neither cross-origin http fetch nor `fetch('data:…')` is allowed.
+// build:itch instead inlines everything via the embed-assets Vite plugin (filling
+// `virtual:doom-embedded-assets`): the manifest + palette as plain JS objects, and each
+// image/sound/music asset as a `data:` URL the loader decodes in-memory with atob — no
+// fetch at all (see ./data-url.ts). In the default build that module is `null`, so this
+// whole graph tree-shakes away and the same-origin build stays lean.
 import EMBEDDED from 'virtual:doom-embedded-assets';
 import type { AssetManifest } from './manifest';
 

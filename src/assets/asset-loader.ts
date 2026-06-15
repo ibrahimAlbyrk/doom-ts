@@ -10,12 +10,15 @@
 //
 // Self-contained itch build: when `EMBEDDED_ASSETS` is present (build:itch), the
 // manifest + palette come from the embedded payload and every asset URL is a `data:`
-// URL instead of an http path — so the existing fetch→decode paths run unchanged but
-// touch no network, which is what an opaque-origin sandbox needs (see ./embedded.ts).
+// URL instead of an http path. Those data: URLs are decoded in-memory (atob → bytes;
+// see ./data-url.ts) rather than fetched, because an embedding host's CSP `connect-src`
+// does NOT cover the `data:` scheme (`connect-src *` still blocks `fetch('data:…')`).
+// Net: the itch build performs ZERO fetches; the default build fetches real URLs as before.
 import type { Audio, Texture, MapData } from '../core';
 import type { AssetStore } from './asset-store';
 import type { AssetManifest } from './manifest';
 import { EMBEDDED_ASSETS } from './embedded';
+import { isDataUrl, parseDataUrl } from './data-url';
 
 export interface LoadProgress {
   loaded: number;
@@ -149,10 +152,21 @@ export class AssetLoader {
     this.store.setPalette(pal);
   }
 
-  private async decodeImage(url: string): Promise<Texture> {
+  /** Image bytes as a Blob: an inlined `data:` URL is decoded via atob (no fetch, so the
+   *  host CSP's connect-src never applies); a real path is fetched (default build). Either
+   *  way createImageBitmap + the canvas pixel readback below run identically. */
+  private async imageBlob(url: string): Promise<Blob> {
+    if (isDataUrl(url)) {
+      const { mime, bytes } = parseDataUrl(url);
+      return new Blob([bytes], { type: mime });
+    }
     const res = await fetch(url);
     if (!res.ok) throw new Error(`AssetLoader: image fetch ${url} → ${res.status}`);
-    const bitmap = await createImageBitmap(await res.blob(), {
+    return res.blob();
+  }
+
+  private async decodeImage(url: string): Promise<Texture> {
+    const bitmap = await createImageBitmap(await this.imageBlob(url), {
       premultiplyAlpha: 'none',
       colorSpaceConversion: 'none',
     });
