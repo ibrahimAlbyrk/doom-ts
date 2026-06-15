@@ -11,6 +11,13 @@
 import EMBEDDED from 'virtual:doom-embedded-assets';
 import type { AssetManifest } from './manifest';
 
+/** One per-level music track: a `data:audio/wav` URL plus its natural loop length. */
+export interface EmbeddedMusicTrack {
+  path: string;
+  durationSec: number;
+  url: string;
+}
+
 export interface EmbeddedAssets {
   manifest: AssetManifest;
   /** PLAYPAL[0] as 256 [r,g,b] triples — same shape as palette.json. */
@@ -19,6 +26,9 @@ export interface EmbeddedAssets {
   images: Record<string, string>;
   /** manifest-relative path → `data:audio/wav;base64,…` URL. */
   sounds: Record<string, string>;
+  /** Per-level music (mirrors the extractor's music index), inlined as `data:` URLs so
+   *  the itch build loops music with zero fetches — full parity with the server build. */
+  music: { rate: number; tracks: Record<string, EmbeddedMusicTrack> };
 }
 
 export const EMBEDDED_ASSETS = EMBEDDED as EmbeddedAssets | null;

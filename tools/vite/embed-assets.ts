@@ -55,7 +55,27 @@ export function embedAssets(enabled: boolean): Plugin {
         sounds[s.path] = dataUrl(abs, 'audio/wav');
       }
 
-      return `export default ${JSON.stringify({ manifest, palette, images, sounds })}`;
+      // Per-level music lives outside the manifest: the extractor writes WAV tracks plus an
+      // index that AudioManager loads on demand. Inline the index + every track as data: URLs
+      // (alongside the SFX) so the self-contained build loops music with zero fetches — full
+      // audio parity with the same-origin build. Bundle size is unconstrained for build:itch.
+      const musicIndexPath = resolve(assetsDir, 'audio/music/index.json');
+      if (!existsSync(musicIndexPath)) {
+        throw new Error(`embedAssets: ${musicIndexPath} missing — run \`npm run extract-assets\` first`);
+      }
+      const musicRaw = JSON.parse(readFileSync(musicIndexPath, 'utf8')) as {
+        rate: number;
+        tracks: Record<string, { path: string; durationSec: number }>;
+      };
+      const tracks: Record<string, { path: string; durationSec: number; url: string }> = {};
+      for (const [id, t] of Object.entries(musicRaw.tracks)) {
+        const abs = resolve(assetsDir, t.path);
+        if (!existsSync(abs)) throw new Error(`embedAssets: music ${t.path} missing under public/assets`);
+        tracks[id] = { path: t.path, durationSec: t.durationSec, url: dataUrl(abs, 'audio/wav') };
+      }
+      const music = { rate: musicRaw.rate, tracks };
+
+      return `export default ${JSON.stringify({ manifest, palette, images, sounds, music })}`;
     },
   };
 }

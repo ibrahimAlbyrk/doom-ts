@@ -46,6 +46,7 @@ const MUSIC_INDEX_PATH = 'audio/music/index.json';
 interface MusicIndexEntry {
   path: string; // relative to the assets base, e.g. "audio/music/D_E1M1.wav"
   durationSec: number;
+  url?: string; // self-contained itch build: inlined `data:audio/wav` URL (see embedded.ts)
 }
 interface MusicIndex {
   rate: number;
@@ -206,7 +207,9 @@ export class AudioManager implements Audio {
       await this.ensureMusicIndex();
       const entry = this.musicIndex?.[id];
       if (!entry || this.pendingMusicId !== id) return; // unknown id / superseded
-      const raw = await (await fetch(MUSIC_ASSETS_BASE + entry.path)).arrayBuffer();
+      // itch build: entry.url is an inlined data: URL (CORS-exempt); same-origin build
+      // resolves the track path against the assets base. Both decode + loop identically.
+      const raw = await (await fetch(entry.url ?? MUSIC_ASSETS_BASE + entry.path)).arrayBuffer();
       const buf = await ctx.decodeAudioData(raw);
       this.buffers.set(id, buf);
       this.startMusicSource(id, buf, loop);
@@ -219,10 +222,11 @@ export class AudioManager implements Audio {
     if (this.musicIndex) return Promise.resolve();
     if (!this.musicIndexLoad) {
       this.musicIndexLoad = (async () => {
-        // The self-contained itch build embeds no music (uncompressed WAV would dwarf
-        // the bundle); skip the fetch so an opaque-origin sandbox logs no CORS errors.
+        // Self-contained itch build: music is inlined as data: URLs (embed-assets plugin),
+        // so use the embedded index for full music parity with the server build — zero
+        // fetches, which is what an opaque-origin sandbox needs (http blocked, data: exempt).
         if (EMBEDDED_ASSETS) {
-          this.musicIndex = {};
+          this.musicIndex = EMBEDDED_ASSETS.music.tracks;
           return;
         }
         try {
@@ -249,6 +253,19 @@ export class AudioManager implements Audio {
     this.master!.disconnect();
     this.master!.connect(analyser);
     analyser.connect(ctx.destination);
+    return analyser;
+  }
+
+  /** Insert an AnalyserNode on a single bus's output (per-bus VU metering / tests) —
+   *  lets a probe read music-bus and sfx-bus levels independently. */
+  attachBusAnalyser(bus: 'sfx' | 'music', fftSize = 2048): AnalyserNode {
+    const ctx = this.ensure();
+    const node = bus === 'sfx' ? this.sfxBus! : this.musicBus!;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = fftSize;
+    node.disconnect();
+    node.connect(analyser);
+    analyser.connect(this.master!);
     return analyser;
   }
 
