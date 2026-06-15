@@ -16,7 +16,8 @@
     "build:all": "npm run build",
     "start:prod": "npx tsx server/prod.ts",
     "test": "npx tsx src/world/world.test.ts && npx tsx src/combat/combat.test.ts && npx tsx src/ai/monster-ai.test.ts && npx tsx src/items/items.test.ts && npx tsx src/weapons/weapons.test.ts && npx tsx src/levels/levels.test.ts && npx tsx src/game/multiplayer.test.ts && npx tsx src/lobby/lobby-client.test.ts && npx tsx src/session/netcode.test.ts && npx tsx src/session/netcode-smooth.test.ts && npx tsx server/coop-complete.test.ts && npx tsx server/deathmatch.test.ts",
-    "extract-assets": "tsx tools/extract-wad/extract.ts"
+    "extract-assets": "tsx tools/extract-wad/extract.ts",
+    "build:itch": "VITE_MP_SERVER_URL=wss://185.249.197.74.sslip.io vite build"
   },
   "devDependencies": {
     "tsx": "^4.19.2",
